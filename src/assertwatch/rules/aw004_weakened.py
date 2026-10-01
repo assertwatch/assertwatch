@@ -82,6 +82,7 @@ class Check:
     exception: str = ""  # raises: the expected exception, as source
     matches_message: bool = False  # raises: match= or a *Regex variant
     tolerance: tuple[float, float] | None = None  # equal: (rel, abs) for approx / almost-equal
+    literal: bool = False  # equal: compared against a literal value (or approx of one)
 
 
 def classify(assertion: Assertion) -> Check | None:
@@ -105,8 +106,19 @@ def _classify_expr(expr: ast.expr) -> Check | None:
                 return Check("notnone", ast.unparse(subject))
             return None
         if isinstance(op, ast.Eq | ast.Is):
-            subject, expected = (right, left) if _is_literal(left) else (left, right)
-            return Check("equal", ast.unparse(subject), tolerance=_approx_tolerance(expected))
+            subject, expected = (right, left) if is_literal(left) else (left, right)
+            literal = is_literal(expected) or (
+                isinstance(expected, ast.Call)
+                and _approx_tolerance(expected) is not None
+                and bool(expected.args)
+                and is_literal(expected.args[0])
+            )
+            return Check(
+                "equal",
+                ast.unparse(subject),
+                tolerance=_approx_tolerance(expected),
+                literal=literal,
+            )
         return None
     if isinstance(expr, ast.Call) and dotted(expr.func) == "isinstance" and expr.args:
         return Check("type", ast.unparse(expr.args[0]))
@@ -127,11 +139,14 @@ def _classify_call(call: ast.Call) -> Check | None:
         return Check(kind, ast.unparse(call.func.value))
     if not args:
         return None
-    subject = ast.unparse(args[1] if _is_literal(args[0]) and len(args) > 1 else args[0])
+    subject = ast.unparse(args[1] if is_literal(args[0]) and len(args) > 1 else args[0])
+    literal = any(is_literal(a) for a in args[:2])
     if name in _EQUAL_CALLS:
-        return Check("equal", subject)
+        return Check("equal", subject, literal=literal)
     if name in _ALMOST_CALLS:
-        return Check("equal", subject, tolerance=_almost_tolerance(call))
+        return Check("equal", subject, tolerance=_almost_tolerance(call), literal=literal)
+    if is_literal(args[0]):
+        return None  # assertTrue(1) / assertIsNotNone("x") check no value under test
     if name == "assertIsNotNone":
         return Check("notnone", subject)
     if name == "assertTrue":
@@ -145,7 +160,7 @@ def _is_none(node: ast.expr) -> bool:
     return isinstance(node, ast.Constant) and node.value is None
 
 
-def _is_literal(node: ast.expr) -> bool:
+def is_literal(node: ast.expr) -> bool:
     try:
         ast.literal_eval(node)
     except (ValueError, TypeError, SyntaxError, MemoryError, RecursionError):
@@ -154,7 +169,7 @@ def _is_literal(node: ast.expr) -> bool:
 
 
 def _number(node: ast.expr | None) -> float | None:
-    if node is None or not _is_literal(node):
+    if node is None or not is_literal(node):
         return None
     value = ast.literal_eval(node)
     return float(value) if isinstance(value, int | float) else None
@@ -202,13 +217,13 @@ def weakening(before: Check, after: Check) -> str | None:
 
 def check(matching: Matching) -> Iterator[Finding]:
     for pair in matching.pairs:
-        yield from _check_pair(pair)
+        yield from check_pair(pair)
 
 
-def _check_pair(pair: Pair) -> Iterator[Finding]:
+def check_pair(pair: Pair) -> Iterator[Finding]:
     base, head = pair.base.assertions, pair.head.assertions
-    lost = _changed(base, head)
-    gained = _changed(head, base)
+    lost = changed(base, head)
+    gained = changed(head, base)
     lost_checks = [(a, classify(a)) for a in lost]
     gained_checks = [(a, classify(a)) for a in gained]
     used: set[int] = set()
@@ -245,7 +260,7 @@ def _check_pair(pair: Pair) -> Iterator[Finding]:
         )
 
 
-def _changed(side: list[Assertion], other: list[Assertion]) -> list[Assertion]:
+def changed(side: list[Assertion], other: list[Assertion]) -> list[Assertion]:
     """Assertions on this side whose text doesn't appear (as often) on the other side."""
     remaining = Counter(a.text for a in other)
     changed = []

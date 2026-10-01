@@ -26,9 +26,17 @@ def all_rules() -> list[Rule]:
         aw003_skipped,
         aw004_weakened,
         aw008_emptied,
+        aw011_oracle,
     )
 
-    modules = (aw001_removed, aw002_assert_count, aw003_skipped, aw004_weakened, aw008_emptied)
+    modules = (
+        aw001_removed,
+        aw002_assert_count,
+        aw003_skipped,
+        aw004_weakened,
+        aw008_emptied,
+        aw011_oracle,
+    )
     return [m.RULE for m in modules]
 
 

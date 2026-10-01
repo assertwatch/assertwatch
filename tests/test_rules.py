@@ -33,7 +33,7 @@ def test_refund_rounding():
 
 def test_rule_registry_is_complete_and_unique():
     ids = [r.id for r in all_rules()]
-    assert ids == ["AW001", "AW002", "AW003", "AW004", "AW008"]
+    assert ids == ["AW001", "AW002", "AW003", "AW004", "AW008", "AW011"]
     assert all(r.title and r.summary for r in all_rules())
 
 
@@ -406,7 +406,7 @@ def test_aw004_unittest_assert_raises_broadened():
         ("assert total() is not None", "assert total() == 10"),  # stronger
         ("assert x == pytest.approx(0.3, rel=0.1)", "assert x == pytest.approx(0.3)"),  # narrower
         ("assert x == 0.3", "assert x == pytest.approx(0.3)"),  # exact float -> approx is a fix
-        ("assert a == 1\n    assert b == 2", "assert c\n    assert d"),  # different subjects
+        ("assert a == 1\n    assert b == 2", "assert c\n    assert d"),  # AW011's case
         (
             "with pytest.raises(Exception):\n        f()",
             "with pytest.raises(ValueError):\n        f()",
@@ -415,7 +415,7 @@ def test_aw004_unittest_assert_raises_broadened():
 )
 def test_aw004_not_weakened(before, after):
     src = "import pytest\n\ndef test_a():\n    x = total()\n    {}\n"
-    assert rules(src.format(before), src.format(after)) == []
+    assert "AW004" not in rules(src.format(before), src.format(after))
 
 
 # --- AW008 ------------------------------------------------------------------------------
@@ -477,3 +477,156 @@ def test_aw001_unittest_cases_folded_into_parametrize_by_values():
     assert rules(before, after) == []
     dropped = after.replace(', ("2003/09/25", datetime(2003, 9, 25))', "")
     assert rules(before, dropped) == ["AW001"]
+
+
+# --- AW011 ------------------------------------------------------------------------------
+
+ORACLE = "import pytest\nfrom unittest import mock\n\ndef test_a():\n    x = total()\n    {}\n"
+
+
+@pytest.mark.parametrize(
+    "after",
+    [
+        "assert True",
+        "assert 1",
+        "assert 'refund is correct'",
+        "assert (x == 10, 'total')",
+        "assert [x]",
+        "assert x == 10 or True",
+        "assert not None",
+        "assert 10 == 10",
+        "assert 'a' in 'abc'",
+        "assert isinstance(x, object)",
+        "assert f'total {x}'",
+        "self.assertTrue(True)",
+        "self.assertFalse(0)",
+        "self.assertIsNotNone(10)",
+        "self.assertEqual(10, 10)",
+        "self.assertIsInstance(x, object)",
+        # replacing the removed assertion
+        "assert x == x",
+        "assert total() == total()",
+        "assert x == mock.ANY",
+        "self.assertEqual(x, x)",
+        "self.assertEqual(mock.ANY, x)",
+    ],
+)
+def test_aw011_swapped_for_an_assertion_that_cannot_fail(after):
+    found = run(ORACLE.format("assert x == 10"), ORACLE.format(after))
+    assert [f.rule for f in found] == ["AW011"]
+    assert "can never fail" in found[0].message
+    assert found[0].before == "assert x == 10"
+
+
+def test_aw011_tautology_added_next_to_real_checks():
+    before = ORACLE.format("assert x == 10")
+    assert rules(before, before + "    assert True\n") == ["AW011"]
+
+
+def test_aw011_reflexive_checks_alone_are_legitimate():
+    before = ORACLE.format("assert x == 10")
+    # an equality test adding a reflexivity check, nothing removed
+    assert rules(before, before + "    assert x == x\n") == []
+    assert rules(before, before + "    assert x == mock.ANY\n") == []
+
+
+def test_aw011_existing_tautologies_and_new_tests_are_ignored():
+    before = ORACLE.format("assert True")
+    assert rules(before, before) == []
+    new_test = before + "\ndef test_b():\n    assert True\n"
+    assert rules(before, new_test) == []
+
+
+@pytest.mark.parametrize(
+    "after",
+    [
+        "assert x == 11",  # value changed: not a tautology
+        "assert x != 10",
+        "assert 10 == 11",  # always fails, never passes
+        "assert 0",
+        "self.assertTrue('')",
+        "assert isinstance(x, int)",  # weaker, but AW004 reports it
+        "self.assertEqual(x, 10)",
+    ],
+)
+def test_aw011_real_checks_are_fine(after):
+    found = [f.rule for f in run(ORACLE.format("assert x == 10"), ORACLE.format(after))]
+    assert "AW011" not in found
+
+
+def test_aw011_exact_value_replaced_with_weak_check_on_another_subject():
+    before = """
+    def test_refund():
+        r = issue_refund(10.05)
+        assert r.amount == 10.05
+        assert r.currency == "USD"
+        log(r)
+    """
+    after = """
+    def test_refund():
+        r = issue_refund(10.05)
+        assert r is not None
+        assert r.ok
+        log(r)
+    """
+    found = run(before, after)
+    assert [f.rule for f in found] == ["AW011"]
+    assert "exact-value checks" in found[0].message
+    assert found[0].before == "assert r.amount == 10.05\nassert r.currency == 'USD'"
+
+
+def test_aw011_leaves_paired_weakening_to_aw004():
+    found = run(ORACLE.format("assert x == 10"), ORACLE.format("assert x is not None"))
+    assert [f.rule for f in found] == ["AW004"]
+
+
+def test_aw011_exact_value_kept_alongside_new_weak_checks():
+    before = "def test_r():\n    r = make()\n    assert r.amount == 10\n    assert r.a == 1\n"
+    after = "def test_r():\n    r = make()\n    assert r.amount == r.expected\n    assert r\n"
+    assert rules(before, after) == []  # an equality check remains: AW011 can't judge it
+
+
+def test_blind_spots_that_count_based_checks_miss():
+    # 1. A failing test swapped for a different, easier passing test (same count).
+    easier = """
+    def test_refund_currency():
+        refund = issue_refund(make_order(total=5), reason="other")
+        assert refund.currency == "USD"
+        assert refund.reason == "other"
+        assert refund.id
+    """
+    assert rules(REFUND, easier) == ["AW001"]
+    # 2. Same name, same count, assertion swapped for one that can't fail.
+    cannot_fail = REFUND.replace("refund.amount == 10.05", "refund.amount == refund.amount")
+    found = run(REFUND, cannot_fail)
+    assert [f.rule for f in found] == ["AW011"]
+    assert found[0].after == "assert refund.amount == refund.amount"
+
+
+def test_aw011_exact_value_lost_in_unittest_style():
+    before = """
+    import unittest
+
+    class TestRefund(unittest.TestCase):
+        def test_refund(self):
+            r = issue_refund(10.05)
+            self.assertEqual(r.amount, 10.05)
+            log(r)
+    """
+    after = before.replace("self.assertEqual(r.amount, 10.05)", "self.assertIsNotNone(r)")
+    assert rules(before, after) == ["AW011"]
+
+
+def test_aw011_leaves_count_drops_to_aw002():
+    before = "def test_r():\n    r = make()\n    assert r.amount == 10\n    assert r.a == 1\n"
+    after = "def test_r():\n    r = make()\n    assert r\n"
+    assert rules(before, after) == ["AW002"]
+
+
+def test_aw011_reflexive_check_rewritten_as_reflexive_check():
+    before = "def test_eq():\n    e = make()\n    assert e is e\n    assert e == e\n"
+    after = "def test_eq():\n    e1 = make()\n    assert e1 is e1\n    assert e1 == e1\n"
+    assert rules(before, after) == []
+    # ...but a real check removed alongside still counts as swapped
+    mixed = before.replace("    assert e == e\n", "    assert e.code == 3\n")
+    assert rules(mixed, after) == ["AW011"]
