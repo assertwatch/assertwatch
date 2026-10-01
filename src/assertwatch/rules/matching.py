@@ -6,8 +6,8 @@ the tests the earlier stages left unmatched:
 
 1. Same id, after following file renames.
 2. Identical body, then body similarity >= RENAME_THRESHOLD (or SAME_NAME_THRESHOLD when
-   the test kept its name and only its file or class changed). unittest assertions are
-   read in their pytest spelling first. These become renamed pairs.
+   the test kept its name, up to case and underscores, and only its file or class changed).
+   unittest assertions are read in their pytest spelling first. These become renamed pairs.
 3. An exact duplicate: a head test with the same body, markers and parametrize cases, so
    removing this copy loses nothing. Folded into it.
 4. Template match against parametrized tests, with literals and parametrize argnames blanked
@@ -136,7 +136,8 @@ def _match_renames(base: list[TestCase], head: list[TestCase]) -> list[Pair]:
         b_text = pytest_style(b.body_text)
         b_tokens = _tokens(b_text)
         for j, h in enumerate(head):
-            threshold = SAME_NAME_THRESHOLD if b.name == h.name else RENAME_THRESHOLD
+            same_name = _name_key(b.name) == _name_key(h.name)
+            threshold = SAME_NAME_THRESHOLD if same_name else RENAME_THRESHOLD
             score = _similarity(b_text, head_texts[j], b_tokens, head_tokens[j], threshold)
             if score >= threshold:
                 candidates.append((score, i, j))
@@ -150,6 +151,11 @@ def _match_renames(base: list[TestCase], head: list[TestCase]) -> list[Pair]:
             used_head.add(j)
             pairs.append(Pair(base[i], head[j], "renamed"))
     return pairs
+
+
+def _name_key(name: str) -> str:
+    """testTzOffsetWeakRef and test_tzoffset_weakref name the same test (unittest -> pytest)."""
+    return name.replace("_", "").lower()
 
 
 _COMPARE_CALLS: dict[str, ast.cmpop] = {
@@ -331,6 +337,40 @@ def _parametrized_matches(
         if same_shape or values_kept:
             found.append(other)
     return tuple(found)
+
+
+def blanked(text: str, names: frozenset[str] = frozenset()) -> tuple[str, frozenset[str]]:
+    """Source text with literals and the given names blanked, and the literals it held."""
+    try:
+        tree = ast.parse(text)
+    except SyntaxError:
+        return text, frozenset()
+    literals = frozenset(literal_reprs(tree))
+    return ast.unparse(_Blank(names).visit(_LiteralDisplays().visit(tree))), literals
+
+
+class _LiteralDisplays(ast.NodeTransformer):
+    """`["foo", "bar"]` is one value: it blanks to `_` like the argname that replaced it."""
+
+    def generic_visit(self, node: ast.AST) -> ast.AST:
+        if isinstance(node, ast.List | ast.Tuple | ast.Set | ast.Dict) and all(
+            isinstance(n, _LITERAL_PARTS) for n in ast.walk(node)
+        ):
+            return ast.copy_location(ast.Constant(None), node)
+        return super().generic_visit(node)
+
+
+_LITERAL_PARTS = (
+    ast.Constant,
+    ast.List,
+    ast.Tuple,
+    ast.Set,
+    ast.Dict,
+    ast.UnaryOp,
+    ast.USub,
+    ast.UAdd,
+    ast.expr_context,
+)
 
 
 class _Blank(ast.NodeTransformer):

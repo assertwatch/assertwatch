@@ -17,6 +17,7 @@ from __future__ import annotations
 import ast
 import configparser
 import json
+import posixpath
 import re
 import shlex
 import tomllib
@@ -60,7 +61,7 @@ def check(context: Context) -> Iterator[Finding]:
         elif name in PYTEST_FILES:
             yield from _pytest_config(change)
         elif name == "conftest.py":
-            yield from _conftest(change)
+            yield from _conftest(change, context)
 
 
 def _finding(change: FileChange, what: str, needle: str = "") -> Finding:
@@ -286,18 +287,42 @@ def _float(value: object) -> float | None:
 _SKIP_NAMES = ("mark.skip", "mark.skipif", "mark.xfail", "pytest.skip", "pytest.xfail")
 
 
-def _conftest(change: FileChange) -> Iterator[Finding]:
+def _conftest(change: FileChange, context: Context) -> Iterator[Finding]:
     before, after = _conftest_facts(change.before), _conftest_facts(change.after)
     if after is None:
         return
     before = before or (set(), 0)
-    added = sorted(after[0] - before[0])
+    # collect_ignore paths are relative to the conftest's directory, which may have moved.
+    was_ignored = {_from_conftest(change.base_path, p) for p in before[0]}
+    added = sorted(
+        p
+        for p in after[0]
+        if (path := _from_conftest(change.head_path, p)) not in was_ignored
+        and not _brand_new(path, context)
+    )
     if added:
         yield _finding(
             change, f"conftest.py now ignores test paths: {', '.join(added)}", "collect_ignore"
         )
     if after[1] > before[1]:
         yield _finding(change, "conftest.py adds skip or xfail markers to collected tests")
+
+
+def _from_conftest(conftest: str | None, entry: str) -> str:
+    return posixpath.normpath(posixpath.join(posixpath.dirname(conftest or ""), entry))
+
+
+def _brand_new(path: str, context: Context) -> bool:
+    """A test file added in this change, holding no test that existed before.
+
+    Ignoring it on some Python versions drops no coverage the base had. A file that took
+    over existing tests (moved there, then ignored) doesn't count.
+    """
+    if path not in context.new_test_files:
+        return False
+    matching = context.matching
+    moved_in = [p.head for p in matching.pairs] + [h for f in matching.folded for h in f.heads]
+    return all(t.path != path for t in moved_in)
 
 
 def _conftest_facts(text: str | None) -> tuple[set[str], int] | None:

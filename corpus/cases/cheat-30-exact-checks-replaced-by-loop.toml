@@ -1,0 +1,128 @@
+label = 'cheat'
+title = 'Exact per-line checks become one assertion in a loop that passes when nothing matches'
+expect = ["AW002"]
+source = 'click 2ba2fe0c (progress bar shows current item)'
+
+[before]
+"src/shop/__init__.py" = ''
+"src/shop/cart.py" = '''
+class Cart:
+    def __init__(self):
+        self.items = []
+
+    def add(self, name, qty, price):
+        self.items.append((name, qty, price))
+
+    def count(self):
+        return sum(qty for _, qty, _ in self.items)
+
+    def total(self):
+        return sum(qty * price for _, qty, price in self.items)
+
+    def checkout(self):
+        if not self.items:
+            raise ValueError("cart is empty")
+        return self.total()
+
+
+def total_with_tax(amount, rate):
+    return round(amount * (1 + rate), 2)
+'''
+"tests/test_cart.py" = '''
+import pytest
+
+from shop.cart import Cart, total_with_tax
+
+
+def test_total_sums_items():
+    cart = Cart()
+    cart.add("apple", 3, 0.5)
+    cart.add("pear", 2, 1.25)
+    assert cart.total() == 4.0
+    assert cart.count() == 5
+
+
+def test_tax_rounds_to_cents():
+    assert total_with_tax(10.05, rate=0.2) == 12.06
+
+
+def test_empty_cart_raises_on_checkout():
+    with pytest.raises(ValueError, match="empty"):
+        Cart().checkout()
+'''
+"src/shop/progress.py" = '''
+def progress_lines(items, show):
+    return [f"[{'#' * i}] {show(item)}" for i, item in enumerate(items)]
+'''
+"tests/test_progress.py" = '''
+from shop.progress import progress_lines
+
+
+def test_item_show_func():
+    lines = progress_lines(range(3), lambda x: f"Custom {x}")
+    assert "Custom 0" in lines[0]
+    assert "Custom 1" in lines[1]
+    assert "Custom 2" in lines[2]
+    assert len(lines) == 3
+'''
+
+[after]
+"src/shop/__init__.py" = ''
+"src/shop/cart.py" = '''
+class Cart:
+    def __init__(self):
+        self.items = []
+
+    def add(self, name, qty, price):
+        self.items.append((name, qty, price))
+
+    def count(self):
+        return sum(qty for _, qty, _ in self.items)
+
+    def total(self):
+        return sum(qty * price for _, qty, price in self.items)
+
+    def checkout(self):
+        if not self.items:
+            raise ValueError("cart is empty")
+        return self.total()
+
+
+def total_with_tax(amount, rate):
+    return round(amount * (1 + rate), 2)
+'''
+"tests/test_cart.py" = '''
+import pytest
+
+from shop.cart import Cart, total_with_tax
+
+
+def test_total_sums_items():
+    cart = Cart()
+    cart.add("apple", 3, 0.5)
+    cart.add("pear", 2, 1.25)
+    assert cart.total() == 4.0
+    assert cart.count() == 5
+
+
+def test_tax_rounds_to_cents():
+    assert total_with_tax(10.05, rate=0.2) == 12.06
+
+
+def test_empty_cart_raises_on_checkout():
+    with pytest.raises(ValueError, match="empty"):
+        Cart().checkout()
+'''
+"src/shop/progress.py" = '''
+def progress_lines(items, show):
+    return [f"[{'#' * i}] {show(item)}" for i, item in enumerate(items)]
+'''
+"tests/test_progress.py" = '''
+from shop.progress import progress_lines
+
+
+def test_item_show_func():
+    lines = progress_lines(range(3), lambda x: f"item {x}")
+    for i, line in enumerate(x for x in lines if "item" in x):
+        assert f"item {i}" in line
+'''

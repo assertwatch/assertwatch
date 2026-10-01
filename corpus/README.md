@@ -29,3 +29,7 @@ passing or the README's numbers go stale.
 
 Add a case for every cheat or false positive you find in the wild, modeled on the real
 change but rewritten small.
+
+[`real-history.md`](real-history.md) is the other half: a random sample of commits from
+open-source projects that AssertWatch blocks, labelled one by one. Its false positives that
+were fixed have a case here; the ones that remain are listed there.

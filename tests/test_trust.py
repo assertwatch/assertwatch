@@ -9,6 +9,7 @@ from gitutil import commit_all, git, write
 
 from assertwatch.check import check_diff
 from assertwatch.config import Allow, parse_config
+from assertwatch.extract.python import extract
 from assertwatch.gitdiff import DiffLine, _parse_unified, commit_messages, diff_lines
 from assertwatch.paths import is_guard_path
 from assertwatch.rules import FileChange, run_rules
@@ -353,6 +354,36 @@ def test_aw009_conftest():
     assert "skip or xfail" in file_rules("tests/conftest.py", before, skip_hook)[0].message
     fixture = before + "\n@pytest.fixture\ndef client():\n    return make()\n"
     assert file_rules("tests/conftest.py", before, fixture) == []
+
+
+def test_aw009_conftest_ignoring_a_new_test_file():
+    """A test file added in the same change, skipped on old Pythons, takes no coverage away."""
+    before = 'collect_ignore = []\nif OLD:\n    collect_ignore.extend(["tests/test_a.py"])\n'
+    after = before.replace('"tests/test_a.py"', '"tests/test_a.py", "tests/test_new.py"')
+    conftest = FileChange("conftest.py", "conftest.py", before, after)
+    new_file = extract("def test_new_api():\n    assert new_api() == 3\n", "tests/test_new.py")
+    assert run_rules([], [new_file], files=[conftest]) == []
+    # An existing file, or a new file that existing tests were moved into, still counts.
+    assert len(run_rules([], [], files=[conftest])) == 1
+    moved = extract("def test_refund():\n    assert refund() == 10.05\n", "tests/test_x.py")
+    into_new = extract("def test_refund():\n    assert refund() == 10.05\n", "tests/test_new.py")
+    found = run_rules([moved], [into_new], files=[conftest])
+    assert [f.rule for f in found] == ["AW009"]
+
+
+def test_aw009_conftest_moved_into_tests_keeps_its_ignores():
+    """collect_ignore paths are relative to the conftest, so moving it rewrites them."""
+    before = 'collect_ignore = ["tests/test_pattern_matching.py"]\n'
+    after = 'collect_ignore = ["test_pattern_matching.py"]\n'
+    moved = FileChange("conftest.py", "tests/conftest.py", before, after)
+    assert run_rules([], [], files=[moved]) == []
+    other = 'collect_ignore = ["test_refund.py"]\n'
+    assert (
+        len(
+            run_rules([], [], files=[FileChange("conftest.py", "tests/conftest.py", before, other)])
+        )
+        == 1
+    )
 
 
 # --- git layer ----------------------------------------------------------------------------

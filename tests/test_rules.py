@@ -315,6 +315,48 @@ def test_unittest_to_pytest_conversion_is_a_rename():
     assert rules(before, dropped) == ["AW002"]
 
 
+def test_unittest_name_respelled_in_pytest_style_is_a_rename():
+    """testTzOffsetWeakRef -> test_tzoffset_weakref, with the body reworked a little."""
+    before = """
+    import unittest
+
+    class TzOffsetTest(unittest.TestCase):
+        def testTzOffsetWeakRef(self):
+            UTC1 = tz.tzoffset("UTC", 0)
+            UTC2 = tz.tzoffset("UTC", 0)
+            assert id(UTC1) == id(UTC2)
+            weak_ref_id = id(UTC1)
+            del UTC1
+            del UTC2
+            gc.collect()
+            UTC3 = tz.tzoffset("UTC", 0)
+            assert not weak_ref_id == id(UTC3)
+
+    @pytest.mark.parametrize("args", [("UTC", 0), ("EST", -18000)])
+    def test_tzoffset_singleton(args):
+        assert tz.tzoffset(*args) is tz.tzoffset(*args)
+    """
+    after = """
+    import unittest
+
+    def test_tzoffset_weakref():
+        UTC1 = tz.tzoffset("UTC", 0)
+        UTC_ref = weakref.ref(tz.tzoffset("UTC", 0))
+        UTC1 is UTC_ref()
+        del UTC1
+        gc.collect()
+        assert UTC_ref() is None
+        assert UTC_ref() is not tz.tzoffset("UTC", 0)
+
+    @pytest.mark.parametrize("args", [("UTC", 0), ("EST", -18000)])
+    def test_tzoffset_singleton(args):
+        assert tz.tzoffset(*args) is tz.tzoffset(*args)
+    """
+    assert rules(before, after) == []
+    gutted = after.replace('        assert UTC_ref() is not tz.tzoffset("UTC", 0)\n', "")
+    assert rules(before, gutted) != []  # too different to pair: still blocked
+
+
 def test_pytest_to_unittest_conversion_is_a_rename():
     before = "def test_tax():\n    assert tax(10.05) == 12.06\n    assert tax(0) == 0\n"
     after = """
@@ -394,6 +436,55 @@ def test_aw002_assertion_moved_to_a_new_test():
 def test_aw002_assertion_reworded_is_not_a_drop():
     after = REFUND.replace("refund.amount == 10.05", "10.05 == refund.amount")
     assert rules(REFUND, after) == []
+
+
+CHAIN = """
+def test_help(runner):
+    result = runner.invoke(cli, ["--help"])
+    assert not result.exception
+    assert "ROOT HELP" in result.output
+
+    result = runner.invoke(cli, ["sdist", "--help"])
+    assert not result.exception
+    assert "SDIST HELP" in result.output
+    assert result.output.splitlines()[:2] == ["Usage: cli sdist", ""]
+"""
+CHAIN_PARAMETRIZED = """
+import pytest
+
+@pytest.mark.parametrize(
+    ("args", "expect", "head"),
+    [
+        (["--help"], "ROOT HELP", ["Usage: cli", ""]),
+        (["sdist", "--help"], "SDIST HELP", ["Usage: cli sdist", ""]),
+    ],
+)
+def test_help(runner, args, expect, head):
+    result = runner.invoke(cli, args)
+    assert not result.exception
+    assert expect in result.output
+    assert result.output.splitlines()[:2] == head
+"""
+
+
+def test_aw002_checks_folded_into_the_test_s_own_parametrize():
+    assert rules(CHAIN, CHAIN_PARAMETRIZED) == []
+    # A case whose expected value didn't make it into the cases is a drop.
+    lost_value = CHAIN_PARAMETRIZED.replace('"SDIST HELP"', '"HELP"')
+    assert rules(CHAIN, lost_value) == ["AW002"]
+    # So is a check that became weaker on the way in.
+    weaker = CHAIN_PARAMETRIZED.replace("assert expect in result.output", "assert result.output")
+    assert "AW002" in rules(CHAIN, weaker)
+    # Or one case standing in for two.
+    one_case = CHAIN_PARAMETRIZED.replace(
+        '        (["--help"], "ROOT HELP", ["Usage: cli", ""]),\n', ""
+    )
+    assert "AW002" in rules(CHAIN, one_case)
+    # Or fewer checks run in total, even with every value kept.
+    repeated = CHAIN.replace(
+        "    assert not result.exception\n", "    assert not result.exception\n" * 3
+    )
+    assert "AW002" in rules(repeated, CHAIN_PARAMETRIZED)
 
 
 # --- AW003 ------------------------------------------------------------------------------

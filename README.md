@@ -10,6 +10,31 @@ or loosened assertions, new skips, rewritten expected values, mocks of the code 
 relaxed test or coverage config. Deterministic, no LLM, runs offline. Python (pytest) first, then
 Java (JUnit 5).
 
+It checks at two points: when the agent tries to end its turn, and on the pull request.
+
+```text
+         agent edits code and tests, then tries to stop
+                 │
+  ╔══════════════▼══════════════╗
+  ║ Claude Code Stop hook       ║── weakened ──▶ the agent gets the report and
+  ║ diff since session start    ║                must restore the test or say
+  ╚══════════════╤══════════════╝                why it changed
+                 │ clean, or explained
+  ┌──────────────▼──────────────┐
+  │ pull request                │
+  └──────────────┬──────────────┘
+  ╔══════════════▼══════════════╗
+  ║ GitHub Action               ║── weakened ──▶ annotations and a job summary;
+  ║ PR head vs its merge-base   ║                with fail-on: block, the PR
+  ╚══════════════╤══════════════╝                can't merge until a human
+                 │ clean                         resolves it
+                 ▼
+               merge
+```
+
+The hook gives the agent a chance to put the test back before you see the change. The CI
+check is what makes it binding, since the agent can edit anything on its own machine.
+
 ## Claude Code hook
 
 ```sh
@@ -79,6 +104,22 @@ Exit codes: `0` clean, `1` findings at or above `--fail-on` (`block`, the defaul
 and step outputs when run in GitHub Actions. Formats: `text`, `json`, `github`.
 `assertwatch hook` follows Claude Code's convention instead: `2` blocks the agent's stop.
 
+Each check reads both sides of the diff, pairs every old test with its new version, and then
+runs the rules on the pairs:
+
+```text
+  base ─┐  ┌─────────────┐  ┌────────────┐  ╔═════════════╗  ┌──────────┐
+        ├─▶│ read diff   │─▶│ extract    │─▶║ match tests ║─▶│ rules    │─▶ block
+  head ─┘  │ config from │  │ tests and  │  ║ renamed,    ║  │ AW000 to │   or warn
+           │ base only   │  │ assertions │  ║ moved,      ║  │ AW011    │
+           └─────────────┘  └────────────┘  ║ split       ║  └──────────┘
+                                            ╚═════════════╝
+```
+
+Matching is what keeps refactors quiet: a test that was renamed, moved, split, merged into a
+parametrized test or converted from unittest is compared with its new self, not reported
+as removed.
+
 | Rule | Catches |
 |---|---|
 | AW000 | A waiver added in the same change it would excuse |
@@ -113,8 +154,8 @@ suppress anything; they are reported as AW000 for a human to approve.
 `make eval` replays the labelled corpus in [`corpus/cases/`](corpus/cases): small, complete
 changes, each one a cheat that should be caught or a refactor that shouldn't be blocked. The
 refactors are modeled on real commits from open-source projects that earlier versions
-blocked. Results today: **26 of 28 cheats caught, 1 of 20 refactors blocked** (93% recall,
-5% false positives on refactors; 1 more refactor gets a warning).
+blocked. Results today: **30 of 32 cheats caught, 1 of 24 refactors blocked** (94% recall,
+4% false positives on refactors; 1 more refactor gets a warning).
 
 - **Missed:** a failing assertion wrapped in `try/except AssertionError: pass`, and the
   function under test patched to return the expected value. Those are AW007 and AW006,
@@ -124,17 +165,30 @@ blocked. Results today: **26 of 28 cheats caught, 1 of 20 refactors blocked** (9
 - **Warned:** an intended behavior change, where the code and the expected value change
   together (AW005 asks for confirmation).
 
-Read these numbers with care. The corpus is small, and it was written by the same people
-as the rules, after the rules. Cheats an agent might invent that we haven't thought of
+Read these numbers with care. The corpus is small, and most of it was written by the same
+people as the rules, after the rules. Cheats an agent might invent that we haven't thought of
 aren't in it. Cases that fail on purpose are marked `known` in their file, and the test
 suite fails when one starts passing, so the numbers here stay current.
 
-On real history, we ran the last 300 test-touching commits of six open-source Python projects
-(click, more-itertools, attrs, dateutil, markupsafe, itsdangerous; 1,318 commits). 198 of
-them (15%) get a finding: 145 a blocking one, 53 only a warning that a value changed along
-with the code. Most flagged commits are intended changes a human should approve, such as removing tests for
-a removed feature or skipping a test on one platform. The rest are false positives, mostly
-from large restructures. They haven't been labelled one by one yet.
+**On real history**, which nobody wrote for us: we ran the last 300 test-touching commits of
+six open-source Python projects (click, more-itertools, attrs, dateutil, markupsafe,
+itsdangerous; 1,318 commits). 189 of them (14%) get a finding: 136 a blocking one, 53 only a
+warning that a value changed along with the code. We labelled a random 30 of the blocked
+commits by hand ([`corpus/real-history.md`](corpus/real-history.md)):
+
+- **Blocked rightly, about 6% of commits.** Mostly deliberate changes a reviewer should
+  approve: a feature removed with its tests, a platform skip, changed behavior. Four were
+  real weakenings, including a lint autofix that turned a warning check into one that can
+  never pass (the project fixed it later), and a test whose invalid input was swapped for a
+  valid one.
+- **Blocked wrongly, about 4% of commits** (roughly 2-6%): tests rewritten past
+  recognition, checks made stricter in a form the rules don't compare, dead Python 2
+  branches. Labelling found four fixable patterns; they are fixed and in the corpus.
+
+AW005 blocks a changed expected value only when no production code changed, because then the
+test was edited to agree with the code. A human correcting a wrong test value looks exactly
+the same, so expect the occasional block there (8 of the 1,318 commits). If that's too strict
+for your team, set `AW005 = "warn"` under `[severity]`.
 
 ## Development
 

@@ -33,6 +33,7 @@ class Context:
     files: list[FileChange] = field(default_factory=list)  # guard and test-config files
     lines: list[DiffLine] = field(default_factory=list)  # added and removed lines, all files
     messages: list[str] = field(default_factory=list)  # commit messages in base..head
+    new_test_files: frozenset[str] = frozenset()  # test files that didn't exist at base
 
 
 @dataclass(frozen=True)
@@ -89,8 +90,15 @@ def run_rules(
     more specific finding is kept for that test. Then the config applies: severities are
     overridden, "off" rules dropped, and findings under a standing waiver marked as waived.
     """
+    base_files, head_files = list(base_files), list(head_files)
+    path_map = path_map or {}
+    old_paths = {path_map.get(f.path, f.path) for f in base_files}
     context = Context(
-        match_tests(base_files, head_files, path_map), list(files), list(lines), list(messages)
+        match_tests(base_files, head_files, path_map),
+        list(files),
+        list(lines),
+        list(messages),
+        frozenset(f.path for f in head_files if f.path not in old_paths),
     )
     selected = list(rules) if rules is not None else all_rules()
     findings = [f for rule in selected for f in rule.check(context)]
