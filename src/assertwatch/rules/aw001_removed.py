@@ -29,6 +29,7 @@ def check(context: Context) -> Iterator[Finding]:
             test_id=test.id,
             before=test.body_text or None,
             hint=HINT,
+            side="base",
         )
 
     flagged: set[str] = set()

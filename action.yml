@@ -1,0 +1,87 @@
+name: AssertWatch
+description: Flag tests weakened in a pull request (deleted tests, dropped assertions, new skips, loosened config).
+author: assertwatch
+branding:
+  icon: shield
+  color: orange
+
+inputs:
+  fail-on:
+    description: >-
+      Fail the job on findings at or above this severity: "never" (default, report only),
+      "block" or "warn". Errors that stop the check (git, unparsable test files) always fail.
+    default: never
+  base:
+    description: >-
+      Base ref or SHA. Default: the PR base (compared at its merge-base with the head), the
+      merge-queue base, the previous commit of a push, or else the default branch.
+    default: ""
+  head:
+    description: "Head ref or SHA. Default: the PR head, or the commit being built."
+    default: ""
+  working-directory:
+    description: Path of the checked-out repository.
+    default: "."
+
+outputs:
+  findings:
+    description: Active findings (not covered by a standing waiver).
+    value: ${{ steps.check.outputs.findings }}
+  block:
+    description: Active block findings.
+    value: ${{ steps.check.outputs.block }}
+  warn:
+    description: Active warn findings.
+    value: ${{ steps.check.outputs.warn }}
+  failed:
+    description: '"true" when findings reached fail-on.'
+    value: ${{ steps.check.outputs.failed }}
+
+runs:
+  using: composite
+  steps:
+    - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
+      id: uv
+      with:
+        enable-cache: false
+        add-problem-matchers: false
+        ignore-empty-workdir: true
+
+    - id: check
+      shell: bash
+      working-directory: ${{ inputs.working-directory }}
+      env:
+        AW_FAIL_ON: ${{ inputs.fail-on }}
+        AW_BASE: ${{ inputs.base || github.event.pull_request.base.sha || github.event.merge_group.base_sha || github.event.before }}
+        AW_HEAD: ${{ inputs.head || github.event.pull_request.head.sha || github.event.merge_group.head_sha || github.sha }}
+        AW_DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+        AW_UVX: ${{ steps.uv.outputs.uvx-path }}
+      run: |
+        case "$AW_FAIL_ON" in
+          never|block|warn) ;;
+          *) echo "::error title=AssertWatch::fail-on must be never, block or warn (got '$AW_FAIL_ON')"; exit 2 ;;
+        esac
+        # A push that creates a branch has no previous commit: use the default branch.
+        if [ "$AW_BASE" = "0000000000000000000000000000000000000000" ]; then AW_BASE=""; fi
+
+        # actions/checkout fetches one commit by default; the merge-base needs history.
+        if [ "$(git rev-parse --is-shallow-repository)" = "true" ]; then
+          git fetch --quiet --no-tags --unshallow origin
+        fi
+        has() { git rev-parse --quiet --verify "$1^{commit}" >/dev/null; }
+        if ! has "$AW_HEAD"; then git fetch --quiet --no-tags origin "$AW_HEAD"; fi
+        if [ -n "$AW_BASE" ] && ! has "$AW_BASE" \
+          && ! git fetch --quiet --no-tags origin "$AW_BASE" 2>/dev/null; then
+          # e.g. the commit before a force push, no longer on the remote
+          echo "::warning title=AssertWatch::base $AW_BASE not found; using the default branch"
+          AW_BASE=""
+        fi
+        if [ -z "$AW_BASE" ] && [ -n "$AW_DEFAULT_BRANCH" ]; then
+          git fetch --quiet --no-tags origin \
+            "+refs/heads/$AW_DEFAULT_BRANCH:refs/remotes/origin/$AW_DEFAULT_BRANCH"
+          AW_BASE="origin/$AW_DEFAULT_BRANCH"
+        fi
+
+        args=(check --head "$AW_HEAD" --fail-on "$AW_FAIL_ON" --github-actions)
+        if [ -n "$AW_BASE" ]; then args+=(--base "$AW_BASE"); fi
+        "$AW_UVX" --quiet --from "$GITHUB_ACTION_PATH" assertwatch "${args[@]}"

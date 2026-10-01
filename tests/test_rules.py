@@ -51,6 +51,7 @@ def test_unchanged_and_added_tests_are_clean():
 def test_aw001_removed_test():
     found = run(REFUND + "\ndef test_other():\n    assert other() == 1\n", REFUND)
     assert [(f.rule, f.test_id) for f in found] == [("AW001", f"{PATH}::test_other")]
+    assert found[0].side == "base"  # its line is where the test was, before the change
     assert found[0].before == "assert other() == 1"
 
 
@@ -179,6 +180,7 @@ def test_aw001_merged_with_too_few_cases():
     found = run(four, merged)
     assert [f.rule for f in found] == ["AW001"]
     assert "3 parametrized case(s), down from 4" in found[0].message
+    assert found[0].side == "head"
 
 
 def test_aw001_parametrized_case_dropped():

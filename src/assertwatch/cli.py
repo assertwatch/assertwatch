@@ -39,9 +39,14 @@ def _build_parser() -> argparse.ArgumentParser:
     check.add_argument("--format", choices=FORMATS, default="text")
     check.add_argument(
         "--fail-on",
-        choices=["block", "warn"],
+        choices=["block", "warn", "never"],
         default="block",
         help="exit 1 when a finding has at least this severity (default: block)",
+    )
+    check.add_argument(
+        "--github-actions",
+        action="store_true",
+        help="also emit annotations, the job summary and step outputs (in GitHub Actions)",
     )
 
     sub.add_parser("rules", help="list rules")
@@ -90,6 +95,12 @@ def _check(args: argparse.Namespace) -> int:
         return EXIT_USAGE
     report = Report(base, head, result.findings, result.errors, result.test_files)
     sys.stdout.write(render(report, args.format))
+    if args.github_actions:
+        import os
+
+        from assertwatch.report.actions import write_actions
+
+        write_actions(report, args.fail_on, sys.stdout, os.environ)
     if failing(report, args.fail_on):
         return EXIT_FINDINGS
     return EXIT_USAGE if report.errors else EXIT_OK

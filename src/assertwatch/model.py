@@ -104,3 +104,4 @@ class Finding:
     after: str | None = None
     hint: str | None = None
     waiver: str | None = None  # reason of the standing waiver that covers it, if any
+    side: str = "head"  # which side of the diff `line` is on: "head", or "base" for removals

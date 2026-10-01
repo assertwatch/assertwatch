@@ -13,6 +13,7 @@
       "path": "tests/test_refund.py",
       "rule": "AW002",
       "severity": "block",
+      "side": "head",
       "test_id": "tests/test_refund.py::test_refund",
       "waiver": null
     },
@@ -25,6 +26,7 @@
       "path": "tests/test_pay.py",
       "rule": "AW004",
       "severity": "warn",
+      "side": "head",
       "test_id": "tests/test_pay.py::TestPay::test_total",
       "waiver": null
     },
@@ -37,6 +39,7 @@
       "path": "tests/test_pay.py",
       "rule": "AW000",
       "severity": "block",
+      "side": "head",
       "test_id": null,
       "waiver": null
     },
@@ -49,6 +52,7 @@
       "path": "tests/legacy/test_old.py",
       "rule": "AW001",
       "severity": "block",
+      "side": "base",
       "test_id": "tests/legacy/test_old.py::test_old",
       "waiver": "legacy suite retired"
     }

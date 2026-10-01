@@ -2,8 +2,8 @@
 
 > Your agent says the tests pass. AssertWatch checks the tests weren't weakened to make that true.
 
-**Status: pre-alpha.** The Python rules, the CLI and the Claude Code hook work; the GitHub
-Action and Java support are next. Building in public.
+**Status: pre-alpha.** The Python rules, the CLI, the Claude Code hook and the GitHub Action
+work; Java support is next. Building in public.
 
 AssertWatch reads a git diff and flags test weakening by AI coding agents: deleted tests, dropped
 or loosened assertions, new skips, rewritten expected values, mocks of the code under test, and
@@ -39,6 +39,32 @@ to you. Turns that change no test, test-config or guard file are skipped quickly
 CODEOWNERS isn't enforced without it. The hook runs on the agent's machine; the CI check
 is what makes it binding.
 
+## GitHub Action
+
+```yaml
+# .github/workflows/assertwatch.yml
+name: assertwatch
+on: [pull_request]
+permissions:
+  contents: read
+jobs:
+  assertwatch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: assertwatch/assertwatch@main
+        with:
+          fail-on: never   # report only (default); "block" makes it a required check
+```
+
+It compares the PR head with its merge-base on the base branch, so the config and waivers come
+from the base and the PR can't relax them. Findings appear as annotations on the diff and as a
+job summary; outputs `findings`, `block`, `warn` and `failed` are there for later steps. Start
+with `never`, then switch to `block` and mark the job required in branch protection: that is
+what makes the check binding, since the hook runs where the agent can edit it. The action
+fetches the history it needs, so the default shallow checkout is fine. It also works on `push`
+(comparing with the previous commit) and `merge_group`.
+
 ## Usage
 
 ```sh
@@ -48,9 +74,10 @@ assertwatch check --base origin/main --format github   # markdown PR summary
 assertwatch rules                 # list the rules
 ```
 
-Exit codes: `0` clean, `1` findings at or above `--fail-on` (default `block`), `2` usage, git
-or parse error. Formats: `text`, `json`, `github`. `assertwatch hook` follows Claude Code's
-convention instead: `2` blocks the agent's stop.
+Exit codes: `0` clean, `1` findings at or above `--fail-on` (`block`, the default, `warn` or
+`never`), `2` usage, git or parse error. `--github-actions` adds annotations, the job summary
+and step outputs when run in GitHub Actions. Formats: `text`, `json`, `github`.
+`assertwatch hook` follows Claude Code's convention instead: `2` blocks the agent's stop.
 
 | Rule | Catches |
 |---|---|

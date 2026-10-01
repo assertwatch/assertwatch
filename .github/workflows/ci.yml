@@ -27,3 +27,9 @@ jobs:
       - uses: astral-sh/setup-uv@v6
       - name: Smoke test the uvx entry point
         run: uvx --from . assertwatch --version
+
+  assertwatch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./

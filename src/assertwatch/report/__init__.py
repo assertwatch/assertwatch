@@ -40,7 +40,9 @@ class Report:
 
 
 def failing(report: Report, fail_on: str) -> list[Finding]:
-    """Active findings at or above the fail_on severity."""
+    """Active findings at or above the fail_on severity ("never" fails on nothing)."""
+    if fail_on == "never":
+        return []
     threshold = _RANK[Severity(fail_on)]
     return [f for f in report.active if _RANK[f.severity] >= threshold]
 
