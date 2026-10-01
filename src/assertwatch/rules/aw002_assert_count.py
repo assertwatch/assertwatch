@@ -6,13 +6,13 @@ from collections import Counter
 from collections.abc import Iterator
 
 from assertwatch.model import Finding, Severity
-from assertwatch.rules import Rule
-from assertwatch.rules.matching import Matching
+from assertwatch.rules import Context, Rule
 
 ID = "AW002"
 
 
-def check(matching: Matching) -> Iterator[Finding]:
+def check(context: Context) -> Iterator[Finding]:
+    matching = context.matching
     for pair in matching.pairs:
         before, after = pair.base.assertions, pair.head.assertions
         if len(after) >= len(before):

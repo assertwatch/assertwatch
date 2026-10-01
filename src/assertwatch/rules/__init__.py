@@ -1,12 +1,38 @@
-"""Detection rules. Each rule compares matched base/head tests and yields findings."""
+"""Detection rules. Each rule reads the Context of one diff and yields findings."""
 
 from __future__ import annotations
 
 from collections.abc import Callable, Iterable, Iterator
-from dataclasses import dataclass
+from dataclasses import dataclass, field, replace
 
+from assertwatch.config import Config
+from assertwatch.gitdiff import DiffLine
 from assertwatch.model import Finding, Severity, TestFile
 from assertwatch.rules.matching import Matching, match_tests
+
+
+@dataclass(frozen=True)
+class FileChange:
+    """A changed non-test file the rules read in full, on both sides (None = absent)."""
+
+    base_path: str | None
+    head_path: str | None
+    before: str | None
+    after: str | None
+
+    @property
+    def path(self) -> str:
+        return self.head_path or self.base_path or ""
+
+
+@dataclass
+class Context:
+    """Everything the rules see about one diff."""
+
+    matching: Matching
+    files: list[FileChange] = field(default_factory=list)  # guard and test-config files
+    lines: list[DiffLine] = field(default_factory=list)  # added and removed lines, all files
+    messages: list[str] = field(default_factory=list)  # commit messages in base..head
 
 
 @dataclass(frozen=True)
@@ -15,26 +41,30 @@ class Rule:
     title: str
     severity: Severity
     summary: str
-    check: Callable[[Matching], Iterator[Finding]]
+    check: Callable[[Context], Iterator[Finding]]
     supersedes: frozenset[str] = frozenset()  # rules it replaces for the same test
 
 
 def all_rules() -> list[Rule]:
     from assertwatch.rules import (
+        aw000_waiver,
         aw001_removed,
         aw002_assert_count,
         aw003_skipped,
         aw004_weakened,
         aw008_emptied,
+        aw009_config,
         aw011_oracle,
     )
 
     modules = (
+        aw000_waiver,
         aw001_removed,
         aw002_assert_count,
         aw003_skipped,
         aw004_weakened,
         aw008_emptied,
+        aw009_config,
         aw011_oracle,
     )
     return [m.RULE for m in modules]
@@ -45,15 +75,23 @@ def run_rules(
     head_files: Iterable[TestFile],
     path_map: dict[str, str] | None = None,
     rules: Iterable[Rule] | None = None,
+    *,
+    files: Iterable[FileChange] = (),
+    lines: Iterable[DiffLine] = (),
+    messages: Iterable[str] = (),
+    config: Config | None = None,
 ) -> list[Finding]:
     """Match tests across base and head, run every rule, and return sorted findings.
 
     When one rule supersedes another (an emptied test also lost its assertions), only the
-    more specific finding is kept for that test.
+    more specific finding is kept for that test. Then the config applies: severities are
+    overridden, "off" rules dropped, and findings under a standing waiver marked as waived.
     """
-    matching = match_tests(base_files, head_files, path_map)
+    context = Context(
+        match_tests(base_files, head_files, path_map), list(files), list(lines), list(messages)
+    )
     selected = list(rules) if rules is not None else all_rules()
-    findings = [f for rule in selected for f in rule.check(matching)]
+    findings = [f for rule in selected for f in rule.check(context)]
     by_rule = {rule.id: rule for rule in selected}
     superseded = {
         (f.test_id, dropped)
@@ -62,4 +100,21 @@ def run_rules(
         for dropped in by_rule[f.rule].supersedes
     }
     kept = [f for f in findings if (f.test_id, f.rule) not in superseded]
+    if config is not None:
+        kept = apply_config(kept, config)
     return sorted(kept, key=lambda f: (f.path, f.line, f.rule))
+
+
+def apply_config(findings: list[Finding], config: Config) -> list[Finding]:
+    result = []
+    for finding in findings:
+        level = config.severity.get(finding.rule)
+        if level == "off":
+            continue
+        if level is not None:
+            finding = replace(finding, severity=Severity(level))
+        waiver = next((a for a in config.allow if a.covers(finding.rule, finding.path)), None)
+        if waiver is not None:
+            finding = replace(finding, waiver=waiver.reason)
+        result.append(finding)
+    return result

@@ -103,3 +103,4 @@ class Finding:
     before: str | None = None
     after: str | None = None
     hint: str | None = None
+    waiver: str | None = None  # reason of the standing waiver that covers it, if any

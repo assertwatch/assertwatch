@@ -6,8 +6,7 @@ from collections import Counter
 from collections.abc import Iterator
 
 from assertwatch.model import Finding, Severity
-from assertwatch.rules import Rule
-from assertwatch.rules.matching import Matching
+from assertwatch.rules import Context, Rule
 
 ID = "AW003"
 
@@ -18,7 +17,8 @@ def _skip_markers(markers: frozenset[str]) -> set[str]:
     return {m for m in markers if m.removeprefix("param-") in SKIP_MARKERS}
 
 
-def check(matching: Matching) -> Iterator[Finding]:
+def check(context: Context) -> Iterator[Finding]:
+    matching = context.matching
     for pair in matching.pairs:
         base, head = pair.base, pair.head
         added = [f"@{m}" for m in sorted(_skip_markers(head.markers) - _skip_markers(base.markers))]

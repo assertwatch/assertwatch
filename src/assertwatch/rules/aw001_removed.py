@@ -6,8 +6,7 @@ from collections import defaultdict
 from collections.abc import Iterator
 
 from assertwatch.model import Finding, Severity, TestCase
-from assertwatch.rules import Rule
-from assertwatch.rules.matching import Matching
+from assertwatch.rules import Context, Rule
 
 ID = "AW001"
 HINT = (
@@ -16,7 +15,8 @@ HINT = (
 )
 
 
-def check(matching: Matching) -> Iterator[Finding]:
+def check(context: Context) -> Iterator[Finding]:
+    matching = context.matching
     for test in matching.removed:
         if test.is_empty:
             continue  # a placeholder that checked nothing; removing it weakens nothing

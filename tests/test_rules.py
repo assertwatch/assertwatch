@@ -33,7 +33,7 @@ def test_refund_rounding():
 
 def test_rule_registry_is_complete_and_unique():
     ids = [r.id for r in all_rules()]
-    assert ids == ["AW001", "AW002", "AW003", "AW004", "AW008", "AW011"]
+    assert ids == ["AW000", "AW001", "AW002", "AW003", "AW004", "AW008", "AW009", "AW011"]
     assert all(r.title and r.summary for r in all_rules())
 
 

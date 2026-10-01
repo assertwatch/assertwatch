@@ -203,3 +203,80 @@ def _is_binary_change(repo: Path, base: str, head: str | None, change: ChangedFi
         if data is not None:
             return is_binary(data)
     return False
+
+
+@dataclass(frozen=True)
+class DiffLine:
+    """One added or removed line. line is the head line number (base for removed lines)."""
+
+    path: str
+    line: int
+    text: str
+    added: bool
+
+
+def diff_lines(repo: Path, base: str, head: str | None = None) -> list[DiffLine]:
+    """Added and removed lines between base and head (None = working tree, untracked included).
+
+    One `git diff -U0` call, so it stays cheap on large diffs. Binary files have no lines.
+    """
+    args = ["-c", "core.quotePath=false", "diff", "-U0", "-M", "--no-color", "--no-ext-diff"]
+    args += ["--no-textconv", "--src-prefix=a/", "--dst-prefix=b/", base]
+    if head is not None:
+        args.append(head)
+    lines = _parse_unified(run_git(args, repo).decode("utf-8", "replace"))
+    if head is None:
+        untracked = run_git(["ls-files", "--others", "--exclude-standard", "-z"], repo)
+        for raw in untracked.split(b"\0"):
+            path = raw.decode()
+            text = read_text(repo, None, path) if path else None
+            if text is not None:
+                lines.extend(DiffLine(path, n, t, True) for n, t in enumerate(text.splitlines(), 1))
+    return lines
+
+
+def _parse_unified(patch: str) -> list[DiffLine]:
+    lines: list[DiffLine] = []
+    old_path = new_path = None
+    old_no = new_no = old_left = new_left = 0
+    for raw in patch.split("\n"):
+        if old_left or new_left:  # inside a hunk: "--- x" here is a removed "-- x" line
+            if raw.startswith("+") and new_left:
+                lines.append(DiffLine(new_path or "", new_no, raw[1:], True))
+                new_no += 1
+                new_left -= 1
+            elif raw.startswith("-") and old_left:
+                lines.append(DiffLine(new_path or old_path or "", old_no, raw[1:], False))
+                old_no += 1
+                old_left -= 1
+        elif raw.startswith("--- "):
+            old_path = _patch_path(raw[4:], "a/")
+        elif raw.startswith("+++ "):
+            new_path = _patch_path(raw[4:], "b/")
+        elif raw.startswith("@@"):
+            old_range, new_range = raw.split("@@")[1].split()[:2]
+            old_no, old_left = _hunk_range(old_range)
+            new_no, new_left = _hunk_range(new_range)
+    return lines
+
+
+def _hunk_range(spec: str) -> tuple[int, int]:
+    """'-12,3' -> (12, 3); a missing count means 1."""
+    start, _, count = spec[1:].partition(",")
+    return int(start), int(count) if count else 1
+
+
+def _patch_path(field: str, prefix: str) -> str | None:
+    field = field.rstrip("\t")
+    if field == "/dev/null":
+        return None
+    if field.startswith('"'):  # quoted because of special characters
+        field = field[1:-1].encode("latin-1", "backslashreplace").decode("unicode_escape")
+        field = field.encode("latin-1").decode("utf-8", "replace")
+    return field.removeprefix(prefix)
+
+
+def commit_messages(repo: Path, base: str, head: str | None = None) -> list[str]:
+    """Full messages of the commits in base..head (head None = HEAD)."""
+    out = run_git(["log", "--format=%B%x00", f"{base}..{head or 'HEAD'}"], repo)
+    return [m.strip() for m in out.decode("utf-8", "replace").split("\0") if m.strip()]

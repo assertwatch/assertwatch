@@ -20,9 +20,9 @@ from typing import Any
 
 from assertwatch.extract.python import dotted
 from assertwatch.model import Assertion, Finding, Severity
-from assertwatch.rules import Rule
+from assertwatch.rules import Context, Rule
 from assertwatch.rules.aw004_weakened import changed, check_pair, classify, is_literal
-from assertwatch.rules.matching import Matching, Pair
+from assertwatch.rules.matching import Pair
 
 ID = "AW011"
 
@@ -139,7 +139,8 @@ def _is_any(node: ast.expr) -> bool:
     return dotted(node) in ("ANY", "mock.ANY", "unittest.mock.ANY")
 
 
-def check(matching: Matching) -> Iterator[Finding]:
+def check(context: Context) -> Iterator[Finding]:
+    matching = context.matching
     for pair in matching.pairs:
         lost = changed(pair.base.assertions, pair.head.assertions)
         gained = changed(pair.head.assertions, pair.base.assertions)

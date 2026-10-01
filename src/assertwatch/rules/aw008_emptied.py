@@ -5,8 +5,7 @@ from __future__ import annotations
 from collections.abc import Iterator
 
 from assertwatch.model import Finding, Severity, TestCase
-from assertwatch.rules import Rule
-from assertwatch.rules.matching import Matching
+from assertwatch.rules import Context, Rule
 
 ID = "AW008"
 
@@ -15,7 +14,8 @@ def _does_nothing(test: TestCase) -> bool:
     return test.is_empty or (not test.assertions and test.call_count == 0)
 
 
-def check(matching: Matching) -> Iterator[Finding]:
+def check(context: Context) -> Iterator[Finding]:
+    matching = context.matching
     for pair in matching.pairs:
         if _does_nothing(pair.head) and not _does_nothing(pair.base):
             yield Finding(

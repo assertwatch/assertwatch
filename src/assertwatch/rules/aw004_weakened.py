@@ -18,8 +18,8 @@ from dataclasses import dataclass
 
 from assertwatch.extract.python import dotted
 from assertwatch.model import Assertion, Finding, Severity
-from assertwatch.rules import Rule
-from assertwatch.rules.matching import Matching, Pair
+from assertwatch.rules import Context, Rule
+from assertwatch.rules.matching import Pair
 
 ID = "AW004"
 
@@ -215,7 +215,8 @@ def weakening(before: Check, after: Check) -> str | None:
     return None
 
 
-def check(matching: Matching) -> Iterator[Finding]:
+def check(context: Context) -> Iterator[Finding]:
+    matching = context.matching
     for pair in matching.pairs:
         yield from check_pair(pair)
 
