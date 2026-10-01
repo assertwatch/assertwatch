@@ -66,6 +66,9 @@ class TestCase:
     is_empty: bool = False  # body is only a docstring / pass / ...
     returns_first: bool = False  # the first statement is `return`
     body_text: str = ""  # normalized body without docstring, for rename matching
+    param_names: frozenset[str] = frozenset()  # argnames from parametrize decorators
+    param_cases: int | None = None  # parametrized case count; None if absent or not countable
+    param_literals: frozenset[str] = frozenset()  # repr() of literals in the parametrize values
 
     @property
     def id(self) -> str:

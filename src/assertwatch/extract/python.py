@@ -14,6 +14,7 @@ Known limits:
 from __future__ import annotations
 
 import ast
+import math
 from collections.abc import Iterator
 from fnmatch import fnmatch
 from pathlib import PurePosixPath
@@ -53,12 +54,13 @@ def extract(source: str, path: str) -> TestFile:
     if _test_flag(tree.body) is False:
         return result
     module_markers = _pytestmark(tree.body)
+    consts = _module_sequences(tree.body)
     local = _local_classes(tree.body)
     for node in tree.body:
         if isinstance(node, _FUNCTIONS) and node.name.startswith("test"):
-            result.tests.append(_test_case(node, path, (), module_markers))
+            result.tests.append(_test_case(node, path, (), module_markers, consts))
         elif isinstance(node, ast.ClassDef):
-            result.tests.extend(_collect_class(node, path, (), module_markers, local))
+            result.tests.extend(_collect_class(node, path, (), module_markers, local, consts))
     return result
 
 
@@ -71,6 +73,7 @@ def _collect_class(
     outer: tuple[str, ...],
     inherited: frozenset[str],
     local: dict[str, ast.ClassDef],
+    consts: dict[str, ast.expr],
 ) -> list[TestCase]:
     lineage = [node, *_local_bases(node, local)]
     is_unittest = any(dotted(b).endswith("TestCase") for cls in lineage for b in cls.bases)
@@ -90,12 +93,12 @@ def _collect_class(
             if isinstance(child, _FUNCTIONS) and child.name.startswith("test"):
                 if child.name not in seen:
                     seen.add(child.name)
-                    tests.append(_test_case(child, path, classes, markers))
+                    tests.append(_test_case(child, path, classes, markers, consts))
     if not is_unittest:  # pytest doesn't collect classes nested in a unittest.TestCase
         nested = _local_classes(node.body)
         for child in node.body:
             if isinstance(child, ast.ClassDef):
-                tests.extend(_collect_class(child, path, classes, markers, nested))
+                tests.extend(_collect_class(child, path, classes, markers, nested, consts))
     return tests
 
 
@@ -185,6 +188,75 @@ def _param_marks(call: ast.Call) -> set[str]:
     return found
 
 
+def _module_sequences(body: list[ast.stmt]) -> dict[str, ast.expr]:
+    """Module-level `NAME = [...]` / `(...)` assignments, for parametrize values by name."""
+    found: dict[str, ast.expr] = {}
+    for stmt in body:
+        if isinstance(stmt, ast.Assign) and len(stmt.targets) == 1:
+            target, value = stmt.targets[0], stmt.value
+        elif isinstance(stmt, ast.AnnAssign) and stmt.value is not None:
+            target, value = stmt.target, stmt.value
+        else:
+            continue
+        if isinstance(target, ast.Name) and isinstance(value, ast.List | ast.Tuple):
+            found[target.id] = value
+    return found
+
+
+def _parametrize(
+    decorators: list[ast.expr],
+    consts: dict[str, ast.expr],
+) -> tuple[frozenset[str], int | None, frozenset[str]]:
+    """Argnames, case count and literal values of a test's parametrize decorators.
+
+    Stacked decorators multiply the count. It is None when there are none, or when any
+    argvalues isn't a literal list or tuple (or a module-level name bound to one).
+    """
+    names: set[str] = set()
+    literals: set[str] = set()
+    counts: list[int | None] = []
+    for dec in decorators:
+        if not isinstance(dec, ast.Call) or _marker_name(dec) != "parametrize":
+            continue
+        argnames = _call_arg(dec, 0, "argnames")
+        argvalues = _call_arg(dec, 1, "argvalues")
+        if isinstance(argvalues, ast.Name):
+            argvalues = consts.get(argvalues.id, argvalues)
+        if isinstance(argnames, ast.Constant) and isinstance(argnames.value, str):
+            names.update(n.strip() for n in argnames.value.split(",") if n.strip())
+        elif isinstance(argnames, ast.List | ast.Tuple):
+            names.update(e.value for e in argnames.elts if isinstance(e, ast.Constant) and e.value)
+        counts.append(len(argvalues.elts) if isinstance(argvalues, ast.List | ast.Tuple) else None)
+        if argvalues is not None:
+            literals.update(literal_reprs(argvalues))
+    count = None if not counts or None in counts else math.prod(counts)
+    return frozenset(names), count, frozenset(literals)
+
+
+def literal_reprs(node: ast.AST) -> set[str]:
+    """repr() of every literal constant under node; a signed number like -1 counts as one."""
+    found: set[str] = set()
+    signed: set[int] = set()
+    for n in ast.walk(node):
+        if (
+            isinstance(n, ast.UnaryOp)
+            and isinstance(n.op, ast.USub | ast.UAdd)
+            and isinstance(n.operand, ast.Constant)
+            and isinstance(n.operand.value, int | float | complex)
+        ):
+            found.add(repr(ast.literal_eval(n)))
+            signed.add(id(n.operand))
+        elif isinstance(n, ast.Constant) and id(n) not in signed:
+            found.add(repr(n.value))
+    return found
+
+
+def _call_arg(call: ast.Call, index: int, keyword: str) -> ast.expr | None:
+    if len(call.args) > index:
+        return call.args[index]
+    return next((kw.value for kw in call.keywords if kw.arg == keyword), None)
+
+
 def _pytestmark(body: list[ast.stmt]) -> frozenset[str]:
     markers: set[str] = set()
     for stmt in body:
@@ -206,6 +278,7 @@ def _test_case(
     path: str,
     classes: tuple[str, ...],
     inherited: frozenset[str],
+    consts: dict[str, ast.expr],
 ) -> TestCase:
     stmts = _strip_docstring(node.body)
     case = TestCase(
@@ -218,6 +291,9 @@ def _test_case(
         is_empty=all(_is_noop(s) for s in stmts),
         returns_first=bool(stmts) and isinstance(stmts[0], ast.Return),
         body_text="\n".join(ast.unparse(s) for s in stmts),
+    )
+    case.param_names, case.param_cases, case.param_literals = _parametrize(
+        node.decorator_list, consts
     )
     for dec in node.decorator_list:
         if isinstance(dec, ast.Call):

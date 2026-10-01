@@ -369,3 +369,27 @@ def test_syntax_error_is_reported_not_raised():
 def test_null_bytes_are_reported_not_raised():
     tf = extract("x = 1\x00\n", "tests/test_x.py")
     assert tf.parse_error is not None
+
+
+def test_parametrize_names_cases_and_literals():
+    found = collect(
+        """
+        import pytest
+
+        @pytest.mark.parametrize("a, b", [(1, -2), (3, 4)])
+        @pytest.mark.parametrize(argnames=["mode"], argvalues=("x", "y", "z"))
+        def test_grid(a, b, mode): assert a
+
+        @pytest.mark.parametrize("n", load_cases())
+        def test_dynamic(n): assert n
+
+        def test_plain(): assert 1
+        """
+    )
+    grid = found["tests/test_x.py::test_grid"]
+    assert grid.param_names == {"a", "b", "mode"}
+    assert grid.param_cases == 6
+    assert grid.param_literals == {"1", "-2", "3", "4", "'x'", "'y'", "'z'"}
+    assert found["tests/test_x.py::test_dynamic"].param_cases is None
+    plain = found["tests/test_x.py::test_plain"]
+    assert (plain.param_names, plain.param_cases, plain.param_literals) == (set(), None, set())

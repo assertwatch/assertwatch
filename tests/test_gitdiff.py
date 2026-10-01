@@ -1,7 +1,7 @@
-import subprocess
 from pathlib import Path
 
 import pytest
+from gitutil import commit_all, git, write
 
 from assertwatch.gitdiff import (
     ChangedFile,
@@ -12,40 +12,6 @@ from assertwatch.gitdiff import (
     resolve_base,
     resolve_commit,
 )
-
-
-@pytest.fixture(autouse=True)
-def isolated_git(monkeypatch, tmp_path_factory):
-    """Keep the user's git config (signing, hooks, identity) out of the tests."""
-    home = tmp_path_factory.mktemp("home")
-    monkeypatch.setenv("HOME", str(home))
-    monkeypatch.setenv("GIT_CONFIG_GLOBAL", str(home / "gitconfig"))
-    monkeypatch.setenv("GIT_CONFIG_NOSYSTEM", "1")
-    for var in ("AUTHOR", "COMMITTER"):
-        monkeypatch.setenv(f"GIT_{var}_NAME", "Test")
-        monkeypatch.setenv(f"GIT_{var}_EMAIL", "test@example.invalid")
-
-
-def git(repo: Path, *args: str) -> str:
-    return subprocess.run(
-        ["git", *args], cwd=repo, check=True, capture_output=True, text=True
-    ).stdout.strip()
-
-
-def write(repo: Path, path: str, content: str | bytes) -> None:
-    target = repo / path
-    target.parent.mkdir(parents=True, exist_ok=True)
-    if isinstance(content, bytes):
-        target.write_bytes(content)
-    else:
-        target.write_text(content)
-
-
-def commit_all(repo: Path, message: str) -> str:
-    git(repo, "add", "-A")
-    git(repo, "commit", "-q", "-m", message)
-    return git(repo, "rev-parse", "HEAD")
-
 
 TEST_BODY = "def test_one():\n    assert 1 + 1 == 2\n\n\ndef test_two():\n    assert 'a' in 'abc'\n"
 
