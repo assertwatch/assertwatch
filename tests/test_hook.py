@@ -192,19 +192,22 @@ def test_corrupt_state_is_ignored(repo):
 
 
 def test_fast_path_skips_the_rules(repo):
+    run(repo, "SessionStart")
     write(repo, "src/cart.py", "def total():\n    return 11\n")
-    payload = json.dumps({"hook_event_name": "Stop", "cwd": str(repo)})
+    payload = json.dumps({"hook_event_name": "Stop", "cwd": str(repo), "session_id": "s1"})
     script = (
         "import io, sys\n"
         "sys.argv = ['assertwatch', 'hook']\n"
         f"sys.stdin = io.StringIO({payload!r})\n"
         "from assertwatch.cli import main\n"
         "code = main()\n"
-        "heavy = ('assertwatch.check', 'importlib.metadata', 'argparse', 'typing')\n"
-        "print(code, *[m for m in heavy if m in sys.modules])\n"
+        "ours = sorted(m for m in sys.modules if m.startswith('assertwatch'))\n"
+        "print(code, 'argparse' in sys.modules, *ours)\n"
     )
     result = subprocess.run([sys.executable, "-c", script], capture_output=True, text=True)
-    assert result.stdout.split() == ["0"], result.stderr
+    # Stdlib internals vary by patch release; what we import is ours to keep small.
+    expected = ["0", "False", "assertwatch", "assertwatch.cli", "assertwatch.hook"]
+    assert result.stdout.split() == [*expected, "assertwatch.paths"], result.stderr
 
 
 def test_guard_file_change_alone_is_checked(repo):
