@@ -1,0 +1,66 @@
+{
+  "base": "0123456789abcdef0123456789abcdef01234567",
+  "errors": [
+    "tests/test_broken.py: SyntaxError: bad"
+  ],
+  "findings": [
+    {
+      "after": null,
+      "before": "assert refund.currency == 'USD'",
+      "hint": "Restore the removed assertion(s) and fix the code so they pass.",
+      "line": 12,
+      "message": "`test_refund` has 2 assertion(s), down from 3.",
+      "path": "tests/test_refund.py",
+      "rule": "AW002",
+      "severity": "block",
+      "test_id": "tests/test_refund.py::test_refund",
+      "waiver": null
+    },
+    {
+      "after": "assert total() is not None",
+      "before": "assert total() == 10 | 2",
+      "hint": "Restore the stricter assertion and fix the code so it passes.",
+      "line": 40,
+      "message": "Assertion weakened in `test_total`: an equality check became a not-None check.",
+      "path": "tests/test_pay.py",
+      "rule": "AW004",
+      "severity": "warn",
+      "test_id": "tests/test_pay.py::TestPay::test_total",
+      "waiver": null
+    },
+    {
+      "after": null,
+      "before": null,
+      "hint": null,
+      "line": 7,
+      "message": "Waiver proposed in this change (inline allow AW003); reason given: \"flaky\". It needs human approval.",
+      "path": "tests/test_pay.py",
+      "rule": "AW000",
+      "severity": "block",
+      "test_id": null,
+      "waiver": null
+    },
+    {
+      "after": null,
+      "before": "assert old() == 1",
+      "hint": null,
+      "line": 3,
+      "message": "Test `test_old` was removed and no renamed or moved copy was found.",
+      "path": "tests/legacy/test_old.py",
+      "rule": "AW001",
+      "severity": "block",
+      "test_id": "tests/legacy/test_old.py::test_old",
+      "waiver": "legacy suite retired"
+    }
+  ],
+  "head": "fedcba9876543210fedcba9876543210fedcba98",
+  "summary": {
+    "block": 2,
+    "findings": 3,
+    "info": 0,
+    "waived": 1,
+    "warn": 1
+  },
+  "test_files": 4,
+  "version": 1
+}

@@ -1,0 +1,15 @@
+{
+  "base": "0123456789abcdef0123456789abcdef01234567",
+  "errors": [],
+  "findings": [],
+  "head": null,
+  "summary": {
+    "block": 0,
+    "findings": 0,
+    "info": 0,
+    "waived": 0,
+    "warn": 0
+  },
+  "test_files": 1,
+  "version": 1
+}

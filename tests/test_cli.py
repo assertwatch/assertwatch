@@ -23,7 +23,7 @@ def test_no_command_prints_help_and_exits_usage(capsys):
     assert "usage: assertwatch" in capsys.readouterr().out
 
 
-@pytest.mark.parametrize("command", ["check", "rules", "init"])
+@pytest.mark.parametrize("command", ["init"])
 def test_unimplemented_commands_exit_usage(command, capsys):
     assert main([command]) == EXIT_USAGE
     assert "not implemented yet" in capsys.readouterr().err

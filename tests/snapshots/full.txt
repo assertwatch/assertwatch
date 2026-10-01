@@ -1,0 +1,22 @@
+AssertWatch: 3 findings (2 block, 1 warn) in 4 test files, 0123456789ab..fedcba987654.
+
+tests/test_refund.py:12  AW002 [block]  `test_refund` has 2 assertion(s), down from 3.
+    test: tests/test_refund.py::test_refund
+    - assert refund.currency == 'USD'
+    fix: Restore the removed assertion(s) and fix the code so they pass.
+
+tests/test_pay.py:40  AW004 [warn]  Assertion weakened in `test_total`: an equality check became a not-None check.
+    test: tests/test_pay.py::TestPay::test_total
+    - assert total() == 10 | 2
+    + assert total() is not None
+    fix: Restore the stricter assertion and fix the code so it passes.
+
+Waivers requested (need human approval; they don't suppress anything):
+  tests/test_pay.py:7  Waiver proposed in this change (inline allow AW003); reason given: "flaky". It needs human approval.
+
+Covered by standing waivers (reported, not counted):
+  tests/legacy/test_old.py:3  AW001  Test `test_old` was removed and no renamed or moved copy was found.
+      waiver: legacy suite retired
+
+Not checked:
+  tests/test_broken.py: SyntaxError: bad

@@ -54,10 +54,10 @@ def _inline(context: Context) -> Iterator[Finding]:
     removed = Counter(
         (line.path, m.group(0).lower())
         for line in context.lines
-        if not line.added and (m := INLINE.search(line.text))
+        if not line.added and (m := inline_waiver(line.text))
     )
     for line in context.lines:
-        match = INLINE.search(line.text) if line.added else None
+        match = inline_waiver(line.text) if line.added else None
         if match is None:
             continue
         key = (line.path, match.group(0).lower())
@@ -65,6 +65,17 @@ def _inline(context: Context) -> Iterator[Finding]:
             removed[key] -= 1
             continue
         yield _finding(line.path, line.line, f"inline allow {match['rule']}", match["reason"])
+
+
+def inline_waiver(text: str) -> re.Match[str] | None:
+    """The waiver comment on this line, unless it's quoted (in a string or `code`)."""
+    match = INLINE.search(text)
+    if match is None:
+        return None
+    before = text[: match.start()]
+    if any(before.count(quote) % 2 for quote in ("'", '"', "`")):
+        return None
+    return match
 
 
 def _config(change: FileChange) -> Iterator[Finding]:

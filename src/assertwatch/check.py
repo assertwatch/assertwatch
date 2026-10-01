@@ -17,6 +17,7 @@ from assertwatch.rules.aw009_config import is_guard_path
 class CheckResult:
     findings: list[Finding] = field(default_factory=list)
     errors: list[str] = field(default_factory=list)  # skipped files, config problems
+    test_files: int = 0  # changed test files that were compared
 
 
 def check_diff(repo: Path, base: str, head: str | None = None) -> CheckResult:
@@ -64,7 +65,9 @@ def check_diff(repo: Path, base: str, head: str | None = None) -> CheckResult:
         messages=commit_messages(repo, base, head),
         config=config,
     )
-    return CheckResult(findings, errors)
+    # A renamed file counts once, under its head path.
+    paths = {f.path for f in head_files} | {f.path for f in base_files if f.path not in path_map}
+    return CheckResult(findings, errors, len(paths))
 
 
 def _load(repo: Path, ref: str | None, path: str | None, config: Config) -> TestFile | None:

@@ -43,13 +43,16 @@ def test_committed_head_and_file_rename(repo):
         TESTS.replace("def test_tax", "@pytest.mark.skip\ndef test_tax"),
     )
     head = commit_all(repo, "rename and skip")
-    found = check_diff(repo, "base", head).findings
+    result = check_diff(repo, "base", head)
+    assert result.test_files == 1  # the renamed file counts once
+    found = result.findings
     assert [(f.rule, f.test_id) for f in found] == [("AW003", "tests/test_basket.py::test_tax")]
 
 
 def test_non_test_files_and_deleted_test_files(repo):
     write(repo, "src/cart.py", "def total():\n    return 11\n")
     assert check_diff(repo, "main").findings == []
+    assert check_diff(repo, "main").test_files == 0
     (repo / "tests/test_cart.py").unlink()
     assert [f.rule for f in check_diff(repo, "main").findings] == ["AW001", "AW001"]
 

@@ -111,6 +111,12 @@ def test_aw000_inline_waiver_added():
 def test_aw000_waiver_syntax_in_docs_is_not_a_waiver():
     prose = "Add `assertwatch: allow AW003` only through review."
     assert run_rules([], [], lines=lines(("README.md", 4, prose, True))) == []
+    quoted = [
+        "    comment = '# assertwatch: allow AW003 reason=\"flaky\"'",
+        'See `# assertwatch: allow AW003 reason="..."` in the docs.',
+    ]
+    found = run_rules([], [], lines=lines(*(("t.py", n, q, True) for n, q in enumerate(quoted))))
+    assert found == []
     java = '    @Disabled // assertwatch: allow AW003 reason="flaky on CI"'
     assert [f.rule for f in run_rules([], [], lines=lines(("T.java", 9, java, True)))] == ["AW000"]
 
