@@ -6,11 +6,11 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from assertwatch.config import CONFIG_PATH, Config, parse_config, path_matches
-from assertwatch.extract.python import extract, is_test_path
+from assertwatch.extract.python import extract
 from assertwatch.gitdiff import changed_files, commit_messages, diff_lines, read_text
 from assertwatch.model import Finding, TestFile
+from assertwatch.paths import is_guard_path, is_test_path
 from assertwatch.rules import FileChange, run_rules
-from assertwatch.rules.aw009_config import is_guard_path
 
 
 @dataclass

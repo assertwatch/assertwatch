@@ -18,7 +18,8 @@ import tomllib
 from dataclasses import dataclass, field
 from fnmatch import fnmatchcase
 
-CONFIG_PATH = "assertwatch.toml"
+from assertwatch.paths import CONFIG_PATH
+
 SEVERITIES = frozenset({"block", "warn", "info", "off"})
 
 

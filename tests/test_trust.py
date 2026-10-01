@@ -10,8 +10,8 @@ from gitutil import commit_all, git, write
 from assertwatch.check import check_diff
 from assertwatch.config import Allow, parse_config
 from assertwatch.gitdiff import DiffLine, _parse_unified, commit_messages, diff_lines
+from assertwatch.paths import is_guard_path
 from assertwatch.rules import FileChange, run_rules
-from assertwatch.rules.aw009_config import is_guard_path
 
 
 def file_rules(path, before, after, rule=None):

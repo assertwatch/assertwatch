@@ -1,18 +1,18 @@
 """Command-line entry point.
 
 Exit codes: 0 = clean, 1 = findings at or above --fail-on, 2 = usage, git or parse error.
+`assertwatch hook` follows Claude Code's convention instead: 2 blocks the agent's stop.
+
+Imports are deferred to the command that needs them, to keep the hook's fast path fast.
 """
 
 from __future__ import annotations
 
-import argparse
 import sys
 
-from assertwatch import __version__
-from assertwatch.check import check_diff
-from assertwatch.gitdiff import GitError, repo_root, resolve_base, resolve_commit
-from assertwatch.report import FORMATS, Report, failing, render
-from assertwatch.rules import all_rules
+TYPE_CHECKING = False  # typing.TYPE_CHECKING without importing typing (4 ms)
+if TYPE_CHECKING:
+    import argparse
 
 EXIT_OK = 0
 EXIT_FINDINGS = 1
@@ -20,11 +20,15 @@ EXIT_USAGE = 2
 
 
 def _build_parser() -> argparse.ArgumentParser:
+    import argparse
+
+    from assertwatch.report import FORMATS
+
     parser = argparse.ArgumentParser(
         prog="assertwatch",
         description="Catch AI coding agents weakening your tests.",
     )
-    parser.add_argument("--version", action="version", version=f"assertwatch {__version__}")
+    parser.add_argument("--version", action="store_true", help="show the version and exit")
     sub = parser.add_subparsers(dest="command", metavar="<command>")
 
     check = sub.add_parser("check", help="check a diff for test weakening")
@@ -41,13 +45,24 @@ def _build_parser() -> argparse.ArgumentParser:
     )
 
     sub.add_parser("rules", help="list rules")
-    sub.add_parser("init", help="set up config, hook snippet and CODEOWNERS lines")
+    init = sub.add_parser("init", help="set up config, hook snippet and CODEOWNERS lines")
+    init.add_argument(
+        "--owner", help="CODEOWNERS owner for the guard files, e.g. @org/team or @user"
+    )
+    sub.add_parser("hook", help="Claude Code hook (SessionStart and Stop); reads JSON on stdin")
     return parser
 
 
 def main(argv: list[str] | None = None) -> int:
+    if (sys.argv[1:] if argv is None else argv) == ["hook"]:
+        return _hook()  # runs on every agent stop: skip building the parser
     parser = _build_parser()
     args = parser.parse_args(argv)
+    if args.version:
+        from assertwatch import __version__
+
+        print(f"assertwatch {__version__}")
+        parser.exit()
     if args.command is None:
         parser.print_help()
         return EXIT_USAGE
@@ -55,11 +70,16 @@ def main(argv: list[str] | None = None) -> int:
         return _check(args)
     if args.command == "rules":
         return _rules()
-    print(f"assertwatch {args.command}: not implemented yet", file=sys.stderr)
-    return EXIT_USAGE
+    if args.command == "init":
+        return _init(args)
+    return _hook()
 
 
 def _check(args: argparse.Namespace) -> int:
+    from assertwatch.check import check_diff
+    from assertwatch.gitdiff import GitError, repo_root, resolve_base, resolve_commit
+    from assertwatch.report import Report, failing, render
+
     try:
         repo = repo_root()
         base = resolve_base(repo, args.base, args.head)
@@ -76,7 +96,28 @@ def _check(args: argparse.Namespace) -> int:
 
 
 def _rules() -> int:
+    from assertwatch.rules import all_rules
+
     for rule in all_rules():
         print(f"{rule.id}  {rule.severity:<5}  {rule.title}")
         print(f"       {rule.summary}")
     return EXIT_OK
+
+
+def _init(args: argparse.Namespace) -> int:
+    from assertwatch import init
+    from assertwatch.gitdiff import GitError, repo_root
+
+    try:
+        repo = repo_root()
+    except GitError as exc:
+        print(f"assertwatch: {exc}", file=sys.stderr)
+        return EXIT_USAGE
+    return init.run(repo, sys.stdout, owner=args.owner or init.DEFAULT_OWNER)
+
+
+def _hook() -> int:
+    from assertwatch import hook
+
+    payload = "" if sys.stdin is None or sys.stdin.isatty() else sys.stdin.read()
+    return hook.run(payload, sys.stdout, sys.stderr)

@@ -16,12 +16,8 @@ from __future__ import annotations
 import ast
 import math
 from collections.abc import Iterator
-from fnmatch import fnmatch
-from pathlib import PurePosixPath
 
 from assertwatch.model import Assertion, TestCase, TestFile, TryBlock
-
-TEST_FILE_GLOBS = ("test_*.py", "*_test.py")
 
 _RAISES_CALLS = frozenset(
     {"pytest.raises", "pytest.warns", "pytest.deprecated_call", "raises", "warns"}
@@ -36,11 +32,6 @@ _UNITTEST_MARKERS = {
 _PATCH_ROOTS = frozenset({"patch", "mock", "unittest"})
 _NESTED_SCOPES = (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef, ast.Lambda)
 _FUNCTIONS = (ast.FunctionDef, ast.AsyncFunctionDef)
-
-
-def is_test_path(path: str) -> bool:
-    name = PurePosixPath(path).name
-    return any(fnmatch(name, pattern) for pattern in TEST_FILE_GLOBS)
 
 
 def extract(source: str, path: str) -> TestFile:

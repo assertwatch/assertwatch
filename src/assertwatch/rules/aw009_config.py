@@ -22,19 +22,15 @@ import shlex
 import tomllib
 from collections.abc import Iterator
 from dataclasses import dataclass, field
-from fnmatch import fnmatchcase
 from pathlib import PurePosixPath
 
-from assertwatch.config import CONFIG_PATH
 from assertwatch.extract.python import dotted
 from assertwatch.model import Finding, Severity
+from assertwatch.paths import CONFIG_PATH, PYTEST_FILES, SETTINGS, is_workflow_path
 from assertwatch.rules import Context, FileChange, Rule
 
 ID = "AW009"
 
-_SETTINGS = (".claude/settings.json", ".claude/settings.local.json")
-_WORKFLOWS = (".github/workflows/*.yml", ".github/workflows/*.yaml")
-_PYTEST_FILES = frozenset({"pytest.ini", "pyproject.toml", "setup.cfg", "tox.ini", ".coveragerc"})
 
 # addopts options that run fewer tests. Values: does the option take an argument?
 _NARROWING = {
@@ -51,28 +47,17 @@ _SWALLOW = re.compile(r"\|\|\s*(true|:|exit\s+0)\b")
 _CONTINUE = re.compile(r"^\s*continue-on-error\s*:\s*(true|\$\{\{)", re.I | re.M)
 
 
-def is_guard_path(path: str) -> bool:
-    """Files this rule reads in full."""
-    name = PurePosixPath(path).name
-    return (
-        path in (CONFIG_PATH, *_SETTINGS)
-        or name in _PYTEST_FILES
-        or name == "conftest.py"
-        or any(fnmatchcase(path, pattern) for pattern in _WORKFLOWS)
-    )
-
-
 def check(context: Context) -> Iterator[Finding]:
     for change in context.files:
         path = change.path
         name = PurePosixPath(path).name
         if path == CONFIG_PATH:
             yield from _assertwatch_config(change)
-        elif path in _SETTINGS or change.base_path in _SETTINGS:
+        elif path in SETTINGS or change.base_path in SETTINGS:
             yield from _claude_settings(change)
-        elif any(fnmatchcase(path, pattern) for pattern in _WORKFLOWS):
+        elif is_workflow_path(path):
             yield from _workflow(change)
-        elif name in _PYTEST_FILES:
+        elif name in PYTEST_FILES:
             yield from _pytest_config(change)
         elif name == "conftest.py":
             yield from _conftest(change)

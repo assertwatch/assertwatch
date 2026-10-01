@@ -2,7 +2,8 @@ from textwrap import dedent
 
 import pytest
 
-from assertwatch.extract.python import extract, is_test_path
+from assertwatch.extract.python import extract
+from assertwatch.paths import is_test_path
 
 
 def collect(source: str, path: str = "tests/test_x.py"):
