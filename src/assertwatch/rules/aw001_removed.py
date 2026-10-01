@@ -7,6 +7,7 @@ from collections.abc import Iterator
 
 from assertwatch.model import Finding, Severity, TestCase
 from assertwatch.rules import Context, Rule
+from assertwatch.rules.matching import case_siblings
 
 ID = "AW001"
 HINT = (
@@ -36,6 +37,8 @@ def check(context: Context) -> Iterator[Finding]:
     for pair in matching.pairs:
         before, after = pair.base.param_cases, pair.head.param_cases
         if before is not None and after is not None and after < before:
+            if case_siblings(pair.base, pair.head, matching.added):
+                continue  # the cases were split across new tests of the same shape
             flagged.add(pair.head.id)
             yield _fewer_cases(pair.head, before, after)
 

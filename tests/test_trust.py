@@ -111,6 +111,13 @@ def test_aw000_inline_waiver_added():
 def test_aw000_waiver_syntax_in_docs_is_not_a_waiver():
     prose = "Add `assertwatch: allow AW003` only through review."
     assert run_rules([], [], lines=lines(("README.md", 4, prose, True))) == []
+    comment = '# assertwatch: allow AW003 reason="flaky"'
+    data = [("corpus/case.toml", 9, comment, True), ("docs/waivers.md", 3, comment, True)]
+    assert run_rules([], [], lines=lines(*data)) == []  # not code: the text is data or docs
+    kotlin = run_rules(
+        [], [], lines=lines(("src/test/kotlin/CartTest.kt", 3, "// " + comment[2:], True))
+    )
+    assert [f.rule for f in kotlin] == ["AW000"]
     quoted = [
         "    comment = '# assertwatch: allow AW003 reason=\"flaky\"'",
         'See `# assertwatch: allow AW003 reason="..."` in the docs.',

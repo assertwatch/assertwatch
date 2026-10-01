@@ -21,6 +21,8 @@ def check(context: Context) -> Iterator[Finding]:
     matching = context.matching
     for pair in matching.pairs:
         base, head = pair.base, pair.head
+        if "skip" in base.markers:
+            continue  # it never ran: a new skipif or xfail narrows the skip, it can't disable it
         added = [f"@{m}" for m in sorted(_skip_markers(head.markers) - _skip_markers(base.markers))]
         added.extend(f"{c}()" for c in sorted(Counter(head.skip_calls) - Counter(base.skip_calls)))
         if head.returns_first and not base.returns_first:

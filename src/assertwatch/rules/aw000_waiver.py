@@ -3,7 +3,8 @@
 A cheat and its waiver would arrive together, so waivers proposed in the diff never suppress
 anything. Each becomes a finding that shows the proposed reason, for a human to approve:
 - a new `[[allow]]` entry in assertwatch.toml (the config is read from the base ref)
-- an added inline comment `# assertwatch: allow AW003 reason="..."` (or `//` for Java)
+- an added inline comment `# assertwatch: allow AW003 reason="..."` (or `//` for Java) in a
+  source file; the same text in data or docs (a TOML fixture, a README) isn't a comment
 - an `AssertWatch-Allow:` trailer in a commit message
 Once a human merges a config waiver, it is on the base ref and applies from then on.
 """
@@ -34,6 +35,7 @@ TRAILER_VALUE = re.compile(
     r"(?P<rule>AW\d{3})\b[\s:,-]*(?:reason\s*=\s*)?\"?(?P<reason>[^\"]*)\"?", re.IGNORECASE
 )
 COMMIT_PATH = "(commit message)"
+SOURCE_SUFFIXES = (".py", ".java", ".kt")
 
 
 def check(context: Context) -> Iterator[Finding]:
@@ -51,12 +53,13 @@ def check(context: Context) -> Iterator[Finding]:
 
 def _inline(context: Context) -> Iterator[Finding]:
     # A comment that was only moved shows up as removed and added; it isn't new.
+    lines = [line for line in context.lines if line.path.endswith(SOURCE_SUFFIXES)]
     removed = Counter(
         (line.path, m.group(0).lower())
-        for line in context.lines
+        for line in lines
         if not line.added and (m := inline_waiver(line.text))
     )
-    for line in context.lines:
+    for line in lines:
         match = inline_waiver(line.text) if line.added else None
         if match is None:
             continue

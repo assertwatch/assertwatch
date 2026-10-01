@@ -1,0 +1,147 @@
+label = 'refactor'
+title = 'A parametrized test is split by type into two files, each with its share of the cases'
+source = 'click b8a4486d (split out types tests)'
+
+[before]
+"src/shop/__init__.py" = ''
+"src/shop/cart.py" = '''
+class Cart:
+    def __init__(self):
+        self.items = []
+
+    def add(self, name, qty, price):
+        self.items.append((name, qty, price))
+
+    def count(self):
+        return sum(qty for _, qty, _ in self.items)
+
+    def total(self):
+        return sum(qty * price for _, qty, price in self.items)
+
+    def checkout(self):
+        if not self.items:
+            raise ValueError("cart is empty")
+        return self.total()
+
+
+def total_with_tax(amount, rate):
+    return round(amount * (1 + rate), 2)
+'''
+"tests/test_cart.py" = '''
+import pytest
+
+from shop.cart import Cart, total_with_tax
+
+
+def test_total_sums_items():
+    cart = Cart()
+    cart.add("apple", 3, 0.5)
+    cart.add("pear", 2, 1.25)
+    assert cart.total() == 4.0
+    assert cart.count() == 5
+
+
+def test_tax_rounds_to_cents():
+    assert total_with_tax(10.05, rate=0.2) == 12.06
+
+
+def test_empty_cart_raises_on_checkout():
+    with pytest.raises(ValueError, match="empty"):
+        Cart().checkout()
+'''
+"src/shop/ranges.py" = '''
+def in_range(kind, value):
+    return 0 <= value <= 10
+'''
+"tests/test_ranges.py" = '''
+import pytest
+
+from shop.ranges import in_range
+
+
+@pytest.mark.parametrize(
+    ("kind", "value", "expect"),
+    [
+        ("int", 0, True),
+        ("int", 10, True),
+        ("int", 11, False),
+        ("float", 0.0, True),
+        ("float", 9.5, True),
+        ("float", -0.5, False),
+    ],
+)
+def test_range(kind, value, expect):
+    assert in_range(kind, value) is expect
+'''
+
+[after]
+"src/shop/__init__.py" = ''
+"src/shop/cart.py" = '''
+class Cart:
+    def __init__(self):
+        self.items = []
+
+    def add(self, name, qty, price):
+        self.items.append((name, qty, price))
+
+    def count(self):
+        return sum(qty for _, qty, _ in self.items)
+
+    def total(self):
+        return sum(qty * price for _, qty, price in self.items)
+
+    def checkout(self):
+        if not self.items:
+            raise ValueError("cart is empty")
+        return self.total()
+
+
+def total_with_tax(amount, rate):
+    return round(amount * (1 + rate), 2)
+'''
+"tests/test_cart.py" = '''
+import pytest
+
+from shop.cart import Cart, total_with_tax
+
+
+def test_total_sums_items():
+    cart = Cart()
+    cart.add("apple", 3, 0.5)
+    cart.add("pear", 2, 1.25)
+    assert cart.total() == 4.0
+    assert cart.count() == 5
+
+
+def test_tax_rounds_to_cents():
+    assert total_with_tax(10.05, rate=0.2) == 12.06
+
+
+def test_empty_cart_raises_on_checkout():
+    with pytest.raises(ValueError, match="empty"):
+        Cart().checkout()
+'''
+"src/shop/ranges.py" = '''
+def in_range(kind, value):
+    return 0 <= value <= 10
+'''
+"tests/types/test_int_range.py" = '''
+import pytest
+
+from shop.ranges import in_range
+
+
+@pytest.mark.parametrize(("value", "expect"), [(0, True), (10, True), (11, False)])
+def test_range(value, expect):
+    assert in_range("int", value) is expect
+'''
+"tests/types/test_float_range.py" = '''
+import pytest
+
+from shop.ranges import in_range
+
+
+@pytest.mark.parametrize(("value", "expect"), [(0.0, True), (9.5, True), (-0.5, False)])
+def test_range(value, expect):
+    assert in_range("float", value) is expect
+'''

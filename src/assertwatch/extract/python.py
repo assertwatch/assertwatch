@@ -8,7 +8,8 @@ in the same file. `__test__ = False` disables collection.
 Known limits:
 - Test classes imported from other modules (or subclassed across files) are not followed; their
   tests are reported in the file that defines them.
-- Assertions inside helper functions or methods called by a test are not counted for that test.
+- Assertions in helper functions are counted for the tests that call them only when the helper
+  is defined in the same file (a module-level function, or a method of the test's class).
 """
 
 from __future__ import annotations
@@ -47,11 +48,14 @@ def extract(source: str, path: str) -> TestFile:
     module_markers = _pytestmark(tree.body)
     consts = _module_sequences(tree.body)
     local = _local_classes(tree.body)
+    helpers = Helpers(_helper_defs(tree.body, ""))
     for node in tree.body:
         if isinstance(node, _FUNCTIONS) and node.name.startswith("test"):
-            result.tests.append(_test_case(node, path, (), module_markers, consts))
+            result.tests.append(_test_case(node, path, (), module_markers, consts, helpers))
         elif isinstance(node, ast.ClassDef):
-            result.tests.extend(_collect_class(node, path, (), module_markers, local, consts))
+            result.tests.extend(
+                _collect_class(node, path, (), module_markers, local, consts, helpers)
+            )
     return result
 
 
@@ -65,6 +69,7 @@ def _collect_class(
     inherited: frozenset[str],
     local: dict[str, ast.ClassDef],
     consts: dict[str, ast.expr],
+    helpers: Helpers,
 ) -> list[TestCase]:
     lineage = [node, *_local_bases(node, local)]
     is_unittest = any(dotted(b).endswith("TestCase") for cls in lineage for b in cls.bases)
@@ -77,6 +82,10 @@ def _collect_class(
     markers = inherited.union(
         *(_decorator_markers(cls.decorator_list) | _pytestmark(cls.body) for cls in lineage)
     )
+    methods: dict[str, ast.FunctionDef | ast.AsyncFunctionDef] = {}
+    for cls in reversed(lineage):  # an override replaces the inherited helper
+        methods.update(_helper_defs(cls.body, "self."))
+    helpers = helpers.with_methods(methods)
     tests: list[TestCase] = []
     seen: set[str] = set()
     for cls in lineage:  # own methods first, then inherited ones not overridden
@@ -84,12 +93,12 @@ def _collect_class(
             if isinstance(child, _FUNCTIONS) and child.name.startswith("test"):
                 if child.name not in seen:
                     seen.add(child.name)
-                    tests.append(_test_case(child, path, classes, markers, consts))
+                    tests.append(_test_case(child, path, classes, markers, consts, helpers))
     if not is_unittest:  # pytest doesn't collect classes nested in a unittest.TestCase
         nested = _local_classes(node.body)
         for child in node.body:
             if isinstance(child, ast.ClassDef):
-                tests.extend(_collect_class(child, path, classes, markers, nested, consts))
+                tests.extend(_collect_class(child, path, classes, markers, nested, consts, helpers))
     return tests
 
 
@@ -287,6 +296,7 @@ def _test_case(
     classes: tuple[str, ...],
     inherited: frozenset[str],
     consts: dict[str, ast.expr],
+    helpers: Helpers,
 ) -> TestCase:
     stmts = _strip_docstring(node.body)
     case = TestCase(
@@ -315,17 +325,79 @@ def _test_case(
         elif isinstance(sub, ast.Try | ast.TryStar):
             case.try_blocks.append(_try_block(sub))
         elif isinstance(sub, ast.Call):
-            _classify_call(sub, case)
+            inlined = helpers.assertions(dotted(sub.func), sub.lineno)
+            if inlined is not None:
+                case.assertions.extend(inlined)
+                case.call_count += 1
+            else:
+                _classify_call(sub, case)
     return case
+
+
+_Function = ast.FunctionDef | ast.AsyncFunctionDef
+
+
+def _helper_defs(body: list[ast.stmt], prefix: str) -> dict[str, _Function]:
+    """Functions in this scope, keyed by how a test calls them (`name` or `self.name`)."""
+    return {prefix + n.name: n for n in body if isinstance(n, _FUNCTIONS)}
+
+
+class Helpers:
+    """Helper functions defined in the test file: module-level ones, and `self.` methods.
+
+    A test that calls a helper is credited with the helper's assertions, so moving checks into
+    `def assert_cart(cart, total): assert cart.total() == total` keeps the count. A helper
+    without assertions is an ordinary call, whatever its name.
+    """
+
+    def __init__(self, defs: dict[str, _Function]):
+        self.defs = defs
+        self._cache: dict[str, list[Assertion]] = {}
+
+    def with_methods(self, methods: dict[str, _Function]) -> Helpers:
+        return Helpers({**self.defs, **methods}) if methods else self
+
+    def assertions(self, name: str, line: int) -> list[Assertion] | None:
+        """The helper's assertions, placed at the calling line; None if name isn't a helper."""
+        if name not in self.defs:
+            return None
+        if name not in self._cache:
+            self._cache[name] = []  # a recursive helper stops here
+            self._cache[name] = self._collect(self.defs[name])
+        return [Assertion(a.kind, a.name, a.text, line) for a in self._cache[name]]
+
+    def _collect(self, node: _Function) -> list[Assertion]:
+        found: list[Assertion] = []
+        for sub in _walk_body(_strip_docstring(node.body)):
+            if isinstance(sub, ast.Assert):
+                found.append(Assertion("assert", "", ast.unparse(sub), sub.lineno))
+            elif isinstance(sub, ast.Call):
+                inner = self.assertions(dotted(sub.func), sub.lineno)
+                if inner is not None:
+                    found.extend(inner)
+                    continue
+                assertion = _call_assertion(sub)
+                if assertion is not None:
+                    found.append(assertion)
+        return found
+
+
+def _call_assertion(call: ast.Call) -> Assertion | None:
+    name = dotted(call.func)
+    last = name.rsplit(".", 1)[-1]
+    if last.lower().startswith("assert"):
+        return Assertion("call", last, ast.unparse(call), call.lineno)
+    if name in _RAISES_CALLS:
+        return Assertion("raises", last, ast.unparse(call), call.lineno)
+    return None
 
 
 def _classify_call(call: ast.Call, case: TestCase) -> None:
     name = dotted(call.func)
     last = name.rsplit(".", 1)[-1]
-    if last.lower().startswith("assert"):
-        case.assertions.append(Assertion("call", last, ast.unparse(call), call.lineno))
-    elif name in _RAISES_CALLS:
-        case.assertions.append(Assertion("raises", last, ast.unparse(call), call.lineno))
+    assertion = _call_assertion(call)
+    if assertion is not None:
+        case.assertions.append(assertion)
     elif name in _SKIP_CALLS or last == "skipTest":
         case.skip_calls.append(name)
     else:

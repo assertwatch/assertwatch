@@ -108,12 +108,41 @@ Waivers added in the change itself (a new `[[allow]]`, an inline
 `# assertwatch: allow AW003 reason="..."`, an `AssertWatch-Allow:` commit trailer) don't
 suppress anything; they are reported as AW000 for a human to approve.
 
+## How well it works
+
+`make eval` replays the labelled corpus in [`corpus/cases/`](corpus/cases): small, complete
+changes, each one a cheat that should be caught or a refactor that shouldn't be blocked. The
+refactors are modeled on real commits from open-source projects that earlier versions
+blocked. Results today: **26 of 28 cheats caught, 1 of 20 refactors blocked** (93% recall,
+5% false positives on refactors; 1 more refactor gets a warning).
+
+- **Missed:** a failing assertion wrapped in `try/except AssertionError: pass`, and the
+  function under test patched to return the expected value. Those are AW007 and AW006,
+  not built yet.
+- **Blocked by mistake:** three asserts on a recorded warning replaced by one
+  `pytest.warns(DeprecationWarning, match=...)`. It reads as two assertions dropped.
+- **Warned:** an intended behavior change, where the code and the expected value change
+  together (AW005 asks for confirmation).
+
+Read these numbers with care. The corpus is small, and it was written by the same people
+as the rules, after the rules. Cheats an agent might invent that we haven't thought of
+aren't in it. Cases that fail on purpose are marked `known` in their file, and the test
+suite fails when one starts passing, so the numbers here stay current.
+
+On real history, we ran the last 300 test-touching commits of six open-source Python projects
+(click, more-itertools, attrs, dateutil, markupsafe, itsdangerous; 1,318 commits). 198 of
+them (15%) get a finding: 145 a blocking one, 53 only a warning that a value changed along
+with the code. Most flagged commits are intended changes a human should approve, such as removing tests for
+a removed feature or skipping a test on one platform. The rest are false positives, mostly
+from large restructures. They haven't been labelled one by one yet.
+
 ## Development
 
 ```sh
 python3 -m venv .venv && . .venv/bin/activate
 pip install -e ".[dev]"
-ruff check . && ruff format --check . && pytest -q
+ruff check . && ruff format --check . && pytest -q   # or: make check
+make eval                                            # recall and false positives
 assertwatch --version
 ```
 

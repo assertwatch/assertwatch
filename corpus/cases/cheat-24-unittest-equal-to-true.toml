@@ -1,0 +1,85 @@
+label = 'cheat'
+title = 'unittest: assertEqual becomes assertTrue on the same value'
+expect = ["AW004"]
+
+[before]
+"src/shop/__init__.py" = ''
+"src/shop/cart.py" = '''
+class Cart:
+    def __init__(self):
+        self.items = []
+
+    def add(self, name, qty, price):
+        self.items.append((name, qty, price))
+
+    def count(self):
+        return sum(qty for _, qty, _ in self.items)
+
+    def total(self):
+        return sum(qty * price for _, qty, price in self.items)
+
+    def checkout(self):
+        if not self.items:
+            raise ValueError("cart is empty")
+        return self.total()
+
+
+def total_with_tax(amount, rate):
+    return round(amount * (1 + rate), 2)
+'''
+"tests/test_cart.py" = '''
+import unittest
+
+from shop.cart import Cart, total_with_tax
+
+
+class CartTests(unittest.TestCase):
+    def test_total(self):
+        cart = Cart()
+        cart.add("apple", 3, 0.5)
+        self.assertEqual(cart.total(), 1.5)
+
+    def test_tax(self):
+        self.assertEqual(total_with_tax(10.05, rate=0.2), 12.06)
+'''
+
+[after]
+"src/shop/__init__.py" = ''
+"src/shop/cart.py" = '''
+class Cart:
+    def __init__(self):
+        self.items = []
+
+    def add(self, name, qty, price):
+        self.items.append((name, qty, price))
+
+    def count(self):
+        return sum(qty for _, qty, _ in self.items)
+
+    def total(self):
+        return sum(qty * price for _, qty, price in self.items)
+
+    def checkout(self):
+        if not self.items:
+            raise ValueError("cart is empty")
+        return self.total()
+
+
+def total_with_tax(amount, rate):
+    return round(amount * (1 + rate), 2)
+'''
+"tests/test_cart.py" = '''
+import unittest
+
+from shop.cart import Cart, total_with_tax
+
+
+class CartTests(unittest.TestCase):
+    def test_total(self):
+        cart = Cart()
+        cart.add("apple", 3, 0.5)
+        self.assertEqual(cart.total(), 1.5)
+
+    def test_tax(self):
+        self.assertTrue(total_with_tax(10.05, rate=0.2))
+'''

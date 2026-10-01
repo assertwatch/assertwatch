@@ -54,6 +54,7 @@ def run_git(args: list[str], cwd: Path | str) -> bytes:
         result = subprocess.run(
             ["git", *args],
             cwd=cwd,
+            stdin=subprocess.DEVNULL,  # never wait on a terminal or a caller's open pipe
             capture_output=True,
             check=False,
         )

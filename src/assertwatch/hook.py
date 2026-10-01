@@ -135,7 +135,9 @@ def _git_out(cwd: Path | str, *args: str) -> str | None:
     """Raw stdout of a git command, or None if it failed."""
     env = {**os.environ, "GIT_OPTIONAL_LOCKS": "0"}  # don't take the index lock from the agent
     try:
-        result = subprocess.run(["git", *args], cwd=cwd, env=env, capture_output=True)
+        result = subprocess.run(
+            ["git", *args], cwd=cwd, env=env, stdin=subprocess.DEVNULL, capture_output=True
+        )
     except (FileNotFoundError, NotADirectoryError):
         return None
     if result.returncode != 0:

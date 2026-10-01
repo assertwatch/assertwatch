@@ -197,6 +197,153 @@ def test_aw001_parametrized_case_dropped():
     assert rules(before, before.replace("[1, 2, 3]", "[1, 2, 3, 4]")) == []
 
 
+RANGE = """
+import pytest
+
+@pytest.mark.parametrize(
+    ("kind", "value", "expect"),
+    [("int", 0, True), ("int", 11, False), ("float", 9.5, True), ("float", -0.5, False)],
+)
+def test_range(kind, value, expect):
+    assert in_range(kind, value) is expect
+"""
+SPLIT = {
+    "tests/test_int.py": """
+import pytest
+
+@pytest.mark.parametrize(("value", "expect"), [(0, True), (11, False)])
+def test_range(value, expect):
+    assert in_range("int", value) is expect
+""",
+    "tests/test_float.py": """
+import pytest
+
+@pytest.mark.parametrize(("value", "expect"), [(9.5, True), (-0.5, False)])
+def test_range(value, expect):
+    assert in_range("float", value) is expect
+""",
+}
+
+
+def test_aw001_parametrized_cases_split_across_files():
+    assert rules({PATH: RANGE}, SPLIT) == []
+    lost = {
+        **SPLIT,
+        "tests/test_float.py": SPLIT["tests/test_float.py"].replace(", (-0.5, False)", ""),
+    }
+    assert rules({PATH: RANGE}, lost) == ["AW001"]
+    changed = {
+        **SPLIT,
+        "tests/test_float.py": SPLIT["tests/test_float.py"].replace("-0.5", "-0.25"),
+    }
+    assert rules({PATH: RANGE}, changed) == ["AW001"]  # a case's value no longer appears
+    other = {**SPLIT, "tests/test_float.py": "def test_other():\n    assert in_range('x', 1)\n"}
+    assert "AW001" in rules({PATH: RANGE}, other)
+    unrelated = SPLIT["tests/test_float.py"].replace(
+        'def test_range(value, expect):\n    assert in_range("float", value) is expect',
+        'def test_rounding(value, expect):\n    assert round_to(value, "float") == expect',
+    )  # every value survives, but in a test that checks something else
+    assert "AW001" in rules({PATH: RANGE}, {**SPLIT, "tests/test_float.py": unrelated})
+    fewer = SPLIT["tests/test_float.py"].replace(
+        "[(9.5, True), (-0.5, False)]", "[((9.5, -0.5), True)]"
+    )  # every value survives, in fewer cases
+    assert rules({PATH: RANGE}, {**SPLIT, "tests/test_float.py": fewer}) == ["AW001"]
+
+
+def test_aw001_duplicate_test_removed():
+    dup = REFUND + REFUND.replace("test_refund_rounding", "test_refund_rounding_again")
+    assert rules(dup, REFUND) == []
+    marked = REFUND + "\n@pytest.mark.slow" + REFUND.replace("test_refund_rounding", "test_slow")
+    assert rules(marked, REFUND) == ["AW001"]  # not a duplicate: it ran under another marker
+    param = """
+    import pytest
+
+    @pytest.mark.parametrize("n", [1, 2])
+    def test_a(n):
+        assert check(n)
+
+    @pytest.mark.parametrize("n", [3])
+    def test_b(n):
+        assert check(n)
+    """
+    assert rules(param, param.split('@pytest.mark.parametrize("n", [3])')[0]) == ["AW001"]
+    same_count = param.replace("[3]", "[3, 4]")
+    kept = same_count.split('@pytest.mark.parametrize("n", [3, 4])')[0]
+    assert rules(same_count, kept) == ["AW001"]
+    dynamic = param.replace("[1, 2]", "load_a()").replace("[3]", "load_b()")
+    kept = dynamic.split('@pytest.mark.parametrize("n", load_b())')[0]
+    assert rules(dynamic, kept) == ["AW001"]  # its cases can't be compared, so no duplicate
+
+
+def test_unittest_to_pytest_conversion_is_a_rename():
+    before = """
+    import unittest
+
+    class CartTests(unittest.TestCase):
+        def test_tax(self):
+            self.assertEqual(tax(10.05), 12.06)
+
+        def test_items(self):
+            self.assertIsNotNone(Cart().items)
+            self.assertIn("a", Cart().names())
+            self.assertFalse(Cart().frozen)
+
+        def test_empty(self):
+            with self.assertRaisesRegex(ValueError, "empty"):
+                Cart().checkout()
+    """
+    after = """
+    import pytest
+
+    def test_tax():
+        assert tax(10.05) == 12.06
+
+    def test_items():
+        assert Cart().items is not None
+        assert "a" in Cart().names()
+        assert not Cart().frozen
+
+    def test_empty():
+        with pytest.raises(ValueError, match="empty"):
+            Cart().checkout()
+    """
+    found = run(before, after)
+    assert found == []
+    weakened = after.replace("== 12.06", "is not None")
+    assert rules(before, weakened) == ["AW004"]
+    dropped = after.replace('assert "a" in Cart().names()\n        ', "")
+    assert rules(before, dropped) == ["AW002"]
+
+
+def test_pytest_to_unittest_conversion_is_a_rename():
+    before = "def test_tax():\n    assert tax(10.05) == 12.06\n    assert tax(0) == 0\n"
+    after = """
+    import unittest
+
+    class TaxTests(unittest.TestCase):
+        def test_tax_values(self):
+            self.assertEqual(tax(10.05), 12.06)
+            self.assertEqual(tax(0), 0)
+    """
+    assert rules(before, after) == []
+
+
+def test_pytest_style_spelling():
+    from assertwatch.rules.matching import pytest_style
+
+    assert pytest_style("self.assertEqual(a, b, 'msg')") == "assert a == b"
+    assert pytest_style("self.assertIsInstance(x, int)") == "assert isinstance(x, int)"
+    assert pytest_style("self.assertNotIsInstance(x, int)") == "assert not isinstance(x, int)"
+    assert pytest_style("self.assertTrue(x)\nself.assertIsNone(y)") == "assert x\nassert y is None"
+    assert pytest_style("with self.assertWarns(W):\n    f()") == "with pytest.warns(W):\n    f()"
+    assert pytest_style("self.assertIn(a, b)\nself.assertFalse(c)") == "assert a in b\nassert not c"
+    regex = "with self.assertRaisesRegex(E, 'm'):\n    f()"
+    assert pytest_style(regex) == "with pytest.raises(E, match='m'):\n    f()"
+    assert pytest_style("self.assertCustom(a)") == "self.assertCustom(a)"
+    assert pytest_style("other.assertEqual(a, b)") == "other.assertEqual(a, b)"
+    assert pytest_style("self.assertEqual(a b)") == "self.assertEqual(a b)"  # unparsable
+
+
 def test_aw001_parametrized_split_into_plain_tests():
     before = """
     import pytest
@@ -275,6 +422,15 @@ def test_a():
 )
 def test_aw003_skip_added(change):
     assert rules(SIMPLE, SIMPLE.replace(*change)) == ["AW003"]
+
+
+def test_aw003_unconditional_skip_narrowed():
+    skipped = REFUND.replace("def test_refund", '@pytest.mark.skip(reason="x")\ndef test_refund')
+    narrowed = skipped.replace("pytest.mark.skip(", 'pytest.mark.skipif(sys.platform == "win32", ')
+    assert rules(skipped, narrowed) == []
+    assert rules(skipped, skipped.replace("pytest.mark.skip(", "pytest.mark.xfail(")) == []
+    conditional = narrowed
+    assert rules(conditional, skipped) == ["AW003"]  # skipif -> skip widens it
 
 
 def test_aw003_param_case_marked():

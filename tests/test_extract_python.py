@@ -427,3 +427,53 @@ def test_parametrize_cases_from_pytest_param_and_module_lists():
     assert [(r.values, r.line) for r in rows] == [(("1", "2", "3"), 5), (("2", "2", "4"), 6)]
     pair = found["tests/test_x.py::test_pair"].param_rows
     assert [r.values for r in pair] == [("(1, 2)",), ("[3, 4]",)]
+
+
+def test_helper_assertions_count_for_the_calling_test():
+    found = collect(
+        """
+        import unittest
+
+
+        def assert_cart(cart, total, count):
+            assert cart.total() == total
+            check_count(cart, count)
+
+
+        def check_count(cart, count):
+            assert cart.count() == count
+
+
+        def assert_looks_fine(cart):
+            return cart is not None  # named like an assertion, checks nothing
+
+
+        def recurse(n):
+            assert n
+            recurse(n - 1)
+
+
+        def test_cart():
+            cart = make()
+            assert_cart(cart, 4.0, 5)
+            assert_looks_fine(cart)
+            recurse(3)
+
+
+        class CartTests(unittest.TestCase):
+            def assertCartEqual(self, cart, total):
+                self.assertEqual(cart.total(), total)
+
+            def test_total(self):
+                self.assertCartEqual(make(), 4.0)
+        """
+    )
+    cart = found["tests/test_x.py::test_cart"]
+    assert [(a.kind, a.text, a.line) for a in cart.assertions] == [
+        ("assert", "assert cart.total() == total", 25),
+        ("assert", "assert cart.count() == count", 25),
+        ("assert", "assert n", 27),
+    ]
+    assert cart.call_count == 4  # make(), and each helper call
+    total = found["tests/test_x.py::CartTests::test_total"]
+    assert [a.text for a in total.assertions] == ["self.assertEqual(cart.total(), total)"]

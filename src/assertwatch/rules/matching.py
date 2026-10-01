@@ -6,14 +6,17 @@ the tests the earlier stages left unmatched:
 
 1. Same id, after following file renames.
 2. Identical body, then body similarity >= RENAME_THRESHOLD (or SAME_NAME_THRESHOLD when
-   the qualified name is unchanged and only the file changed). These become renamed pairs.
-3. Template match against parametrized tests, with literals and parametrize argnames blanked
+   the test kept its name and only its file or class changed). unittest assertions are
+   read in their pytest spelling first. These become renamed pairs.
+3. An exact duplicate: a head test with the same body, markers and parametrize cases, so
+   removing this copy loses nothing. Folded into it.
+4. Template match against parametrized tests, with literals and parametrize argnames blanked
    out, for `test_a`/`test_b` -> one parametrized test and the reverse. The base test's
    literal values must still appear in the head test (in its body or parametrize values),
    so a hard case can't be folded into an easier one. Or, when the shape changed too
    (unittest -> pytest), every meaningful literal of the base test appears in a
    parametrized head test's values and both call a common function. These are folded.
-4. Every assertion of the base test still exists in some head test, and the head has no
+5. Every assertion of the base test still exists in some head test, and the head has no
    fewer copies of it than the base had (split, or merged into another test). Folded too.
 
 What remains on the base side is removed; what remains on the head side is added.
@@ -106,7 +109,11 @@ def match_tests(
 
     shapes = _Shapes()
     for test in unmatched_base:
-        heads = _parametrized_matches(test, head, shapes) or _split_into(test, head, result)
+        heads = (
+            _duplicate_of(test, head)
+            or _parametrized_matches(test, head, shapes)
+            or _split_into(test, head, result)
+        )
         if heads:
             result.folded.append(Folded(test, heads))
         else:
@@ -118,21 +125,19 @@ def _mapped_id(test: TestCase, path_map: dict[str, str]) -> str:
     return "::".join((path_map.get(test.path, test.path), *test.classes, test.name))
 
 
-def _qualname(test: TestCase) -> tuple[str, ...]:
-    return (*test.classes, test.name)
-
-
 def _match_renames(base: list[TestCase], head: list[TestCase]) -> list[Pair]:
     """Greedy one-to-one matching by body similarity, best scores first."""
     if not base or not head:
         return []
-    head_tokens = [_tokens(t.body_text) for t in head]
+    head_texts = [pytest_style(t.body_text) for t in head]
+    head_tokens = [_tokens(text) for text in head_texts]
     candidates: list[tuple[float, int, int]] = []
     for i, b in enumerate(base):
-        b_tokens = _tokens(b.body_text)
+        b_text = pytest_style(b.body_text)
+        b_tokens = _tokens(b_text)
         for j, h in enumerate(head):
-            threshold = SAME_NAME_THRESHOLD if _qualname(b) == _qualname(h) else RENAME_THRESHOLD
-            score = _similarity(b.body_text, h.body_text, b_tokens, head_tokens[j], threshold)
+            threshold = SAME_NAME_THRESHOLD if b.name == h.name else RENAME_THRESHOLD
+            score = _similarity(b_text, head_texts[j], b_tokens, head_tokens[j], threshold)
             if score >= threshold:
                 candidates.append((score, i, j))
     candidates.sort(key=lambda c: (-c[0], c[1], c[2]))
@@ -145,6 +150,98 @@ def _match_renames(base: list[TestCase], head: list[TestCase]) -> list[Pair]:
             used_head.add(j)
             pairs.append(Pair(base[i], head[j], "renamed"))
     return pairs
+
+
+_COMPARE_CALLS: dict[str, ast.cmpop] = {
+    "assertEqual": ast.Eq(),
+    "assertEquals": ast.Eq(),
+    "assertAlmostEqual": ast.Eq(),
+    "assertListEqual": ast.Eq(),
+    "assertDictEqual": ast.Eq(),
+    "assertTupleEqual": ast.Eq(),
+    "assertSetEqual": ast.Eq(),
+    "assertSequenceEqual": ast.Eq(),
+    "assertMultiLineEqual": ast.Eq(),
+    "assertNotEqual": ast.NotEq(),
+    "assertIs": ast.Is(),
+    "assertIsNot": ast.IsNot(),
+    "assertIn": ast.In(),
+    "assertNotIn": ast.NotIn(),
+    "assertGreater": ast.Gt(),
+    "assertGreaterEqual": ast.GtE(),
+    "assertLess": ast.Lt(),
+    "assertLessEqual": ast.LtE(),
+}
+_CONTEXT_CALLS = {
+    "assertRaises": "raises",
+    "assertRaisesRegex": "raises",
+    "assertWarns": "warns",
+    "assertWarnsRegex": "warns",
+}
+
+
+def pytest_style(body: str) -> str:
+    """The body with unittest assertions spelled the pytest way, for comparing bodies.
+
+    `self.assertEqual(a, b)` reads as `assert a == b`, `with self.assertRaisesRegex(E, r)` as
+    `with pytest.raises(E, match=r)`, so a unittest -> pytest conversion still looks like the
+    same test.
+    """
+    if "self.assert" not in body:
+        return body
+    try:
+        tree = ast.parse(body)
+    except SyntaxError:
+        return body
+    return ast.unparse(_PytestStyle().visit(tree))
+
+
+class _PytestStyle(ast.NodeTransformer):
+    def visit_Expr(self, node: ast.Expr) -> ast.AST:
+        test = _as_assert(node.value)
+        return ast.copy_location(ast.Assert(test=test), node) if test is not None else node
+
+    def visit_withitem(self, node: ast.withitem) -> ast.AST:
+        call = node.context_expr
+        name = _self_method(call)
+        if isinstance(call, ast.Call) and name in _CONTEXT_CALLS and call.args:
+            keywords = [ast.keyword("match", call.args[1])] if len(call.args) > 1 else []
+            func = ast.Attribute(ast.Name("pytest"), _CONTEXT_CALLS[name])
+            node.context_expr = ast.Call(func, [call.args[0]], keywords)
+        return node
+
+
+def _self_method(node: ast.expr) -> str | None:
+    if (
+        isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Attribute)
+        and isinstance(node.func.value, ast.Name)
+        and node.func.value.id == "self"
+    ):
+        return node.func.attr
+    return None
+
+
+def _as_assert(node: ast.expr) -> ast.expr | None:
+    name = _self_method(node)
+    if name is None:
+        return None
+    args = node.args  # type: ignore[attr-defined]
+    if name in _COMPARE_CALLS and len(args) >= 2:
+        return ast.Compare(args[0], [_COMPARE_CALLS[name]], [args[1]])
+    if not args:
+        return None
+    if name == "assertTrue":
+        return args[0]
+    if name == "assertFalse":
+        return ast.UnaryOp(ast.Not(), args[0])
+    if name in ("assertIsNone", "assertIsNotNone"):
+        op = ast.Is() if name == "assertIsNone" else ast.IsNot()
+        return ast.Compare(args[0], [op], [ast.Constant(None)])
+    if name in ("assertIsInstance", "assertNotIsInstance") and len(args) >= 2:
+        check = ast.Call(ast.Name("isinstance"), args[:2], [])
+        return check if name == "assertIsInstance" else ast.UnaryOp(ast.Not(), check)
+    return None
 
 
 def _similarity(a: str, b: str, a_tokens: list[str], b_tokens: list[str], floor: float) -> float:
@@ -206,8 +303,8 @@ def _parametrized_matches(
     test: TestCase, head: list[TestCase], shapes: _Shapes
 ) -> tuple[TestCase, ...]:
     """Parametrized head tests this test was folded into, or plain ones it was split into."""
-    if not test.body_text:
-        return ()
+    if not test.body_text or (test.param_names and test.param_cases is None):
+        return ()  # cases from a call or a variable can't be shown to survive
     mine = shapes(test)
     meaningful = (mine.literals | test.param_literals) - _TRIVIAL
     found = []
@@ -252,6 +349,66 @@ class _Blank(ast.NodeTransformer):
         if node.id in self.names:
             return ast.copy_location(ast.Name("_"), node)
         return node
+
+
+def _duplicate_of(test: TestCase, head: list[TestCase]) -> tuple[TestCase, ...]:
+    """A head test that runs exactly the same checks, so removing this copy loses nothing.
+
+    Parametrized tests count only when their cases are listed in the source: two tests over
+    `load_a()` and `load_b()` share a body but not their cases.
+    """
+    if test.param_names and test.param_cases is None:
+        return ()
+    for other in head:
+        if (
+            other.body_text == test.body_text
+            and other.markers == test.markers
+            and _cases(other) == _cases(test)
+        ):
+            return (other,)
+    return ()
+
+
+def case_siblings(base: TestCase, head: TestCase, added: list[TestCase]) -> list[TestCase]:
+    """New parametrized tests that took over some of base's cases from its head counterpart.
+
+    A parametrized test split by kind into several files (`test_range` with int and float
+    cases -> one `test_range` per type) pairs with one of them; the others are added tests
+    of the same shape. They count only if, together with head, they keep every case's values
+    and at least as many cases.
+    """
+    if not base.param_rows or base.param_cases is None:
+        return []
+    shapes = _Shapes()
+    mine = shapes(head)
+    siblings = [
+        t
+        for t in added
+        if t.param_names
+        and t.param_cases
+        and RENAME_THRESHOLD
+        <= _similarity(
+            mine.template, shapes(t).template, mine.tokens, shapes(t).tokens, RENAME_THRESHOLD
+        )
+    ]
+    group = [head, *siblings]
+    if sum(t.param_cases or 0 for t in group) < base.param_cases:
+        return []
+    kept = set().union(*(shapes(t).literals | t.param_literals for t in group))
+    for row in base.param_rows:
+        values: set[str] = set()
+        for value in row.values:
+            try:
+                values |= literal_reprs(ast.parse(value, mode="eval"))
+            except SyntaxError:
+                return []
+        if not values <= kept:
+            return []
+    return siblings
+
+
+def _cases(test: TestCase) -> list[tuple[tuple[str, ...], tuple[str, ...]]]:
+    return [(row.names, row.values) for row in test.param_rows]
 
 
 def _split_into(test: TestCase, head: list[TestCase], result: Matching) -> tuple[TestCase, ...]:
