@@ -201,6 +201,15 @@ def test_cli_github_actions_without_actions_env(repo, capsys, monkeypatch):
     assert "::" not in capsys.readouterr().out
 
 
+def test_cli_expected_value_change_blocks_unless_code_changed(repo, capsys):
+    write(repo, "tests/test_a.py", "def test_a():\n    assert a() == 1\n    assert b() == 3\n")
+    assert main(["check", "--worktree"]) == EXIT_FINDINGS
+    assert "AW005 [block]" in capsys.readouterr().out
+    write(repo, "src/app.py", "def b():\n    return 3\n")  # untracked files count too
+    assert main(["check", "--worktree"]) == EXIT_OK
+    assert "AW005 [warn]" in capsys.readouterr().out
+
+
 def test_cli_unparsable_test_file_exits_usage(repo, capsys):
     write(repo, "tests/test_a.py", "def test_a(:\n")
     assert main(["check", "--worktree"]) == EXIT_USAGE
@@ -215,4 +224,4 @@ def test_cli_git_errors_exit_usage(repo, capsys):
 def test_cli_rules_lists_every_rule(capsys):
     assert main(["rules"]) == EXIT_OK
     out = capsys.readouterr().out
-    assert out.count("block") == 8 and "AW011  block  Assertion no longer checks anything" in out
+    assert out.count("block") == 9 and "AW011  block  Assertion no longer checks anything" in out

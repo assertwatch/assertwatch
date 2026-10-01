@@ -17,7 +17,7 @@ import ast
 import math
 from collections.abc import Iterator
 
-from assertwatch.model import Assertion, TestCase, TestFile, TryBlock
+from assertwatch.model import Assertion, ParamCase, TestCase, TestFile, TryBlock
 
 _RAISES_CALLS = frozenset(
     {"pytest.raises", "pytest.warns", "pytest.deprecated_call", "raises", "warns"}
@@ -197,8 +197,8 @@ def _module_sequences(body: list[ast.stmt]) -> dict[str, ast.expr]:
 def _parametrize(
     decorators: list[ast.expr],
     consts: dict[str, ast.expr],
-) -> tuple[frozenset[str], int | None, frozenset[str]]:
-    """Argnames, case count and literal values of a test's parametrize decorators.
+) -> tuple[frozenset[str], int | None, frozenset[str], tuple[ParamCase, ...]]:
+    """Argnames, case count, literal values and cases of a test's parametrize decorators.
 
     Stacked decorators multiply the count. It is None when there are none, or when any
     argvalues isn't a literal list or tuple (or a module-level name bound to one).
@@ -206,6 +206,7 @@ def _parametrize(
     names: set[str] = set()
     literals: set[str] = set()
     counts: list[int | None] = []
+    rows: list[ParamCase] = []
     for dec in decorators:
         if not isinstance(dec, ast.Call) or _marker_name(dec) != "parametrize":
             continue
@@ -213,15 +214,31 @@ def _parametrize(
         argvalues = _call_arg(dec, 1, "argvalues")
         if isinstance(argvalues, ast.Name):
             argvalues = consts.get(argvalues.id, argvalues)
+        own: list[str] = []
         if isinstance(argnames, ast.Constant) and isinstance(argnames.value, str):
-            names.update(n.strip() for n in argnames.value.split(",") if n.strip())
+            own = [n.strip() for n in argnames.value.split(",") if n.strip()]
         elif isinstance(argnames, ast.List | ast.Tuple):
-            names.update(e.value for e in argnames.elts if isinstance(e, ast.Constant) and e.value)
+            own = [e.value for e in argnames.elts if isinstance(e, ast.Constant) and e.value]
+        names.update(own)
         counts.append(len(argvalues.elts) if isinstance(argvalues, ast.List | ast.Tuple) else None)
         if argvalues is not None:
             literals.update(literal_reprs(argvalues))
+        if own and isinstance(argvalues, ast.List | ast.Tuple):
+            rows.extend(_param_cases(tuple(own), argvalues.elts))
     count = None if not counts or None in counts else math.prod(counts)
-    return frozenset(names), count, frozenset(literals)
+    return frozenset(names), count, frozenset(literals), tuple(rows)
+
+
+def _param_cases(names: tuple[str, ...], elts: list[ast.expr]) -> Iterator[ParamCase]:
+    """Cases whose values line up with the argnames; pytest.param ids and marks are left out."""
+    for elt in elts:
+        values: list[ast.expr] = [elt]
+        if isinstance(elt, ast.Call) and dotted(elt.func).endswith("param"):
+            values = list(elt.args)
+        elif len(names) > 1 and isinstance(elt, ast.Tuple | ast.List):
+            values = list(elt.elts)
+        if len(values) == len(names):
+            yield ParamCase(names, tuple(ast.unparse(v) for v in values), elt.lineno)
 
 
 def literal_reprs(node: ast.AST) -> set[str]:
@@ -283,7 +300,7 @@ def _test_case(
         returns_first=bool(stmts) and isinstance(stmts[0], ast.Return),
         body_text="\n".join(ast.unparse(s) for s in stmts),
     )
-    case.param_names, case.param_cases, case.param_literals = _parametrize(
+    case.param_names, case.param_cases, case.param_literals, case.param_rows = _parametrize(
         node.decorator_list, consts
     )
     for dec in node.decorator_list:

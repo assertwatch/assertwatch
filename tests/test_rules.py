@@ -3,6 +3,8 @@ from textwrap import dedent
 import pytest
 
 from assertwatch.extract.python import extract
+from assertwatch.gitdiff import DiffLine
+from assertwatch.model import Severity
 from assertwatch.rules import all_rules, run_rules
 
 PATH = "tests/test_x.py"
@@ -33,7 +35,7 @@ def test_refund_rounding():
 
 def test_rule_registry_is_complete_and_unique():
     ids = [r.id for r in all_rules()]
-    assert ids == ["AW000", "AW001", "AW002", "AW003", "AW004", "AW008", "AW009", "AW011"]
+    assert ids == ["AW000", "AW001", "AW002", "AW003", "AW004", "AW005", "AW008", "AW009", "AW011"]
     assert all(r.title and r.summary for r in all_rules())
 
 
@@ -418,6 +420,249 @@ def test_aw004_unittest_assert_raises_broadened():
 def test_aw004_not_weakened(before, after):
     src = "import pytest\n\ndef test_a():\n    x = total()\n    {}\n"
     assert "AW004" not in rules(src.format(before), src.format(after))
+
+
+# --- AW005 ------------------------------------------------------------------------------
+
+
+def code_change(path="app/refund.py"):
+    return [DiffLine(path, 3, "    return round(total, 1)", True)]
+
+
+def aw005(before, after, lines=()):
+    sides = [[extract(dedent(src), PATH)] for src in (before, after)]
+    return [f for f in run_rules(*sides, lines=lines) if f.rule == "AW005"]
+
+
+def test_aw005_expected_value_changed_without_code_change_blocks():
+    [found] = aw005(REFUND, REFUND.replace("refund.amount == 10.05", "refund.amount == 10"))
+    assert found.severity == Severity.BLOCK and found.line == 5
+    assert (
+        found.message == "In `test_refund_rounding`, a checked value changed from `10.05` to `10`."
+    )
+    assert (found.before, found.after) == (
+        "assert refund.amount == 10.05",
+        "assert refund.amount == 10",
+    )
+    assert found.test_id == f"{PATH}::test_refund_rounding"
+    assert "test was changed to agree with it" in found.hint
+
+
+def test_aw005_with_production_code_change_warns():
+    after = REFUND.replace("refund.amount == 10.05", "refund.amount == 10")
+    [found] = aw005(REFUND, after, lines=code_change())
+    assert found.severity == Severity.WARN
+    assert found.message.endswith("Production code changed in the same diff.")
+    assert found.hint.startswith("Confirm the behavior change is intended.")
+
+
+@pytest.mark.parametrize(
+    "path",
+    [
+        "README.md",
+        "tests/helpers.py",
+        "tests/conftest.py",
+        "conftest.py",
+        "pyproject.toml",
+        ".github/workflows/ci.yml",
+        ".claude/settings.json",
+        PATH,
+    ],
+)
+def test_aw005_docs_config_and_test_helpers_are_not_production_code(path):
+    after = REFUND.replace("refund.amount == 10.05", "refund.amount == 10")
+    [found] = aw005(REFUND, after, lines=code_change(path))
+    assert found.severity == Severity.BLOCK
+
+
+def test_aw005_survives_a_rename():
+    after = REFUND.replace("test_refund_rounding", "test_refund_rounds_down").replace(
+        "== 10.05", "== 10"
+    )
+    [found] = aw005(REFUND, after)
+    assert found.test_id == f"{PATH}::test_refund_rounds_down"
+
+
+@pytest.mark.parametrize(
+    ("before", "after", "change"),
+    [
+        ("self.assertEqual(x, 'a')", "self.assertEqual(x, 'b')", "`'a'` to `'b'`"),
+        ("assert x == pytest.approx(10.05)", "assert x == pytest.approx(10)", "`10.05` to `10`"),
+        (
+            "self.assertAlmostEqual(x, 0.3, places=2)",
+            "self.assertAlmostEqual(x, 0.4, places=2)",
+            "`0.3` to `0.4`",
+        ),
+        (
+            "pytest.raises(ValueError, match='too big')",
+            "pytest.raises(ValueError, match='bad')",
+            "`'too big'` to `'bad'`",
+        ),
+        ("assert elapsed < 1.0", "assert elapsed < 5.0", "`1.0` to `5.0`"),
+        ("assert flag is True", "assert flag is False", "`True` to `False`"),
+        ("assert x == 1", "assert x == True", "`1` to `True`"),
+        ("assert x == -1", "assert x == 1", "`-1` to `1`"),
+        ("assert f(1) == {'a': 1, 'b': 2}", "assert f(1) == {'a': 1, 'b': 3}", "`2` to `3`"),
+        ("assert s == f'id-{n}'", "assert s == f'key-{n}'", "`f'id-{n}'` to `f'key-{n}'`"),
+        (
+            "assert (a, b, c) == (1, 2, 3)",
+            "assert (a, b, c) == (4, 5, 6)",
+            "`1` to `4`, `2` to `5` (and 1 more)",
+        ),
+    ],
+)
+def test_aw005_value_changes(before, after, change):
+    template = "def test_x():\n    {}\n"
+    [found] = aw005(template.format(before), template.format(after))
+    assert found.message == f"In `test_x`, a checked value changed from {change}."
+
+
+@pytest.mark.parametrize(
+    ("before", "after"),
+    [
+        ("assert x == 1, 'old message'", "assert x == 1, 'new message'"),
+        ("self.assertEqual(x, 1, 'old')", "self.assertEqual(x, 1, 'new')"),
+        ("self.assertEqual(x, 1, msg='old')", "self.assertEqual(x, 1, msg='new')"),
+        ("assert x == pytest.approx(1.5, rel=0.1)", "assert x == pytest.approx(1.5, rel=0.01)"),
+        ("assert x == pytest.approx(1.5, 0.1)", "assert x == pytest.approx(1.5, 0.01)"),
+        ("self.assertAlmostEqual(x, 1.5, 2)", "self.assertAlmostEqual(x, 1.5, 3)"),
+        ("assert x == 10", "assert x == 10.0"),
+        ("assert x == 10.050", "assert x == 10.05"),
+        ("assert x == 1", "assert y == 2"),
+        ("assert x == 1", "assert x == 1 + offset"),
+    ],
+)
+def test_aw005_ignores_messages_tolerances_and_other_shapes(before, after):
+    template = "def test_x():\n    {}\n"
+    assert aw005(template.format(before), template.format(after)) == []
+
+
+def test_aw005_added_assertions_and_unchanged_values_are_clean():
+    added = REFUND + "    assert refund.amount != 10\n"
+    assert aw005(REFUND, added) == []
+    reordered = REFUND.replace(
+        '    assert refund.currency == "USD"\n    assert order.status == "refunded"\n',
+        '    assert order.status == "refunded"\n    assert refund.currency == "USD"\n',
+    )
+    assert aw005(REFUND, reordered) == []
+
+
+def test_aw005_pairs_each_assertion_once():
+    before = "def test_x():\n    assert a == 1\n    assert a == 2\n    assert b == 3\n"
+    after = "def test_x():\n    assert a == 1\n    assert a == 5\n    assert b == 4\n"
+    found = aw005(before, after)
+    assert [f.message.split(", ", 1)[1] for f in found] == [
+        "a checked value changed from `2` to `5`.",
+        "a checked value changed from `3` to `4`.",
+    ]
+
+
+def test_aw005_two_old_values_never_share_one_new_assertion():
+    before = "def test_x():\n    assert a == 1\n    assert a == 2\n"
+    after = "def test_x():\n    assert a == 3\n"
+    found = aw005(before, after)
+    assert [f.message.split(", ", 1)[1] for f in found] == [
+        "a checked value changed from `1` to `3`."
+    ]
+
+
+PARAM = """
+import pytest
+
+@pytest.mark.parametrize(("a", "b", "expected"), [(1, 2, 3), (2, 2, 4)])
+def test_add(a, b, expected):
+    assert add(a, b) == expected
+"""
+
+
+def test_aw005_parametrized_expected_value_changed():
+    [found] = aw005(PARAM, PARAM.replace("(2, 2, 4)", "(2, 2, 5)"))
+    assert (
+        found.message == "In `test_add`, `expected` in a parametrized case changed from `4` to `5`."
+    )
+    assert (found.before, found.after) == ("a=2, b=2, expected=4", "a=2, b=2, expected=5")
+    assert found.line == 4 and found.severity == Severity.BLOCK
+    [found] = aw005(PARAM, PARAM.replace("(2, 2, 4)", "pytest.param(2, 2, 5, id='twos')"))
+    assert "from `4` to `5`" in found.message
+
+
+def test_aw005_parametrized_cases_added_reordered_or_replaced_are_clean():
+    assert aw005(PARAM, PARAM.replace("(2, 2, 4)]", "(2, 2, 4), (3, 3, 6)]")) == []
+    assert aw005(PARAM, PARAM.replace("[(1, 2, 3), (2, 2, 4)]", "[(2, 2, 4), (1, 2, 3)]")) == []
+    assert aw005(PARAM, PARAM.replace("(2, 2, 4)", "(5, 5, 10)")) == []  # a different case
+    single = PARAM.replace('("a", "b", "expected")', '"n"').replace("(1, 2, 3), (2, 2, 4)", "1, 2")
+    assert aw005(single, single.replace("1, 2]", "1, 3]")) == []
+
+
+def test_aw005_parametrized_duplicates_and_pairing():
+    dup = PARAM.replace("[(1, 2, 3), (2, 2, 4)]", "[(2, 2, 4), (2, 2, 4)]")
+    [found] = aw005(dup, dup.replace("[(2, 2, 4), (2, 2, 4)]", "[(2, 2, 4), (2, 2, 5)]"))
+    assert "from `4` to `5`" in found.message
+    pair = PARAM.replace("(1, 2, 3), (2, 2, 4)", "(1, 2, 3), (1, 2, 4)")
+    [found] = aw005(pair, PARAM.replace("(1, 2, 3), (2, 2, 4)", "(1, 2, 4), (1, 2, 4)"))
+    assert "from `3` to `4`" in found.message
+    two_for_one = PARAM.replace("(1, 2, 3), (2, 2, 4)", "(1, 2, 3), (1, 2, 4)")
+    found = aw005(two_for_one, PARAM.replace("(1, 2, 3), (2, 2, 4)", "(1, 2, 5)"))
+    assert len(found) == 1 and "from `3` to `5`" in found[0].message
+
+
+def test_aw005_stacked_parametrize_pairs_cases_by_argnames():
+    before = """
+    import pytest
+
+    @pytest.mark.parametrize(("a", "b"), [(1, 2)])
+    @pytest.mark.parametrize(("c", "d"), [(5, 6)])
+    def test_x(a, b, c, d):
+        assert f(a, b, c) == d
+    """
+    after = before.replace("[(1, 2)]", "[(9, 9)]").replace("[(5, 6)]", "[(1, 6)]")
+    [found] = aw005(before, after)
+    assert "`c` in a parametrized case changed from `5` to `1`" in found.message
+
+
+@pytest.mark.parametrize(
+    ("old", "new"),
+    [
+        ("{'flag': 1, 'type': str}", "{'type': str, 'flag': 1}"),  # keys reordered
+        ("datetime(2014, 2, 4, tz.tzutc())", "datetime(2014, 2, 4, tz.UTC)"),  # not a literal
+        ("'EngineType.OSS'", "EngineType.OSS"),
+        ("MockMain('.example')", "'example'"),
+        ("'FOO:[42.0]'", "f'FOO:[{value}]'"),  # a literal replaced by an interpolation
+    ],
+)
+def test_aw005_parametrized_refactors_are_clean(old, new):
+    case = PARAM.replace("(1, 2, 3)", "(1, {}, 3)")
+    assert aw005(case.format(old), case.format(new)) == []
+
+
+def test_aw005_parametrized_literal_swapped_for_another_literal():
+    case = PARAM.replace("(1, 2, 3)", "(1, 2, {})")
+    [found] = aw005(case.format("'A real None'"), case.format("None"))
+    assert "from `'A real None'` to `None`" in found.message
+    [found] = aw005(case.format("{'a': [1, 2]}"), case.format("{'a': [1, 3]}"))
+    assert "from `{'a': [1, 2]}` to `{'a': [1, 3]}`" in found.message
+
+
+def test_aw005_parametrized_dict_order_and_number_spelling_are_not_changes():
+    dicts = PARAM.replace("(1, 2, 3)", "({'a': 1, 'b': 2}, 2, 3)")
+    reordered = dicts.replace("{'a': 1, 'b': 2}", "{'b': 2, 'a': 1}")
+    [found] = aw005(dicts, reordered.replace("2, 3)", "2, 5)"))
+    assert "`expected` in a parametrized case changed from `3` to `5`" in found.message
+    # a reordered copy plus a new case: the old case is still there, only one was added
+    added = reordered.replace("(2, 2, 4)]", "(2, 2, 4), ({'a': 1, 'b': 2}, 2, 4)]")
+    assert aw005(dicts, added) == []
+    assert aw005(PARAM, PARAM.replace("(2, 2, 4)", "(2, 2, 4.0)")) == []
+
+
+def test_aw005_literal_replaced_by_an_interpolated_parameter_is_clean():
+    before = "def test_x():\n    assert out == 'FOO:[42.0]'\n"
+    after = "def test_x():\n    assert out == f'FOO:[{expected}]'\n"
+    assert aw005(before, after) == []
+
+
+def test_aw005_parametrized_change_warns_with_code_change():
+    [found] = aw005(PARAM, PARAM.replace("(2, 2, 4)", "(2, 2, 5)"), lines=code_change())
+    assert found.severity == Severity.WARN
 
 
 # --- AW008 ------------------------------------------------------------------------------

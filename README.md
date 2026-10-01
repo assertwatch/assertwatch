@@ -86,6 +86,7 @@ and step outputs when run in GitHub Actions. Formats: `text`, `json`, `github`.
 | AW002 | A test that lost assertions |
 | AW003 | A new skip, skipif, xfail, skip call or early return |
 | AW004 | An assertion replaced by a weaker one (`==` to `is not None`, broad exceptions, wider tolerance) |
+| AW005 | An expected value rewritten (`== 10.05` to `== 10`, a parametrized expected value). Blocks when no production code changed; a warning when it did |
 | AW008 | A test body emptied |
 | AW009 | Test config or the guard loosened (`--deselect`, lower `fail_under`, hook removed, ...) |
 | AW011 | An assertion that can never fail (`assert True`, `x == x`) |

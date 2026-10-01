@@ -46,6 +46,15 @@ class TryBlock:
     handler_is_noop: bool  # every handler body is only pass / ... / continue
 
 
+@dataclass(frozen=True)
+class ParamCase:
+    """One case of a parametrize decorator: its argnames and values, as normalized source."""
+
+    names: tuple[str, ...]
+    values: tuple[str, ...]
+    line: int
+
+
 @dataclass
 class TestCase:
     """One test function or method, as the test runner would collect it."""
@@ -69,6 +78,7 @@ class TestCase:
     param_names: frozenset[str] = frozenset()  # argnames from parametrize decorators
     param_cases: int | None = None  # parametrized case count; None if absent or not countable
     param_literals: frozenset[str] = frozenset()  # repr() of literals in the parametrize values
+    param_rows: tuple[ParamCase, ...] = ()  # cases of argvalues written as a list
 
     @property
     def id(self) -> str:

@@ -394,3 +394,36 @@ def test_parametrize_names_cases_and_literals():
     assert found["tests/test_x.py::test_dynamic"].param_cases is None
     plain = found["tests/test_x.py::test_plain"]
     assert (plain.param_names, plain.param_cases, plain.param_literals) == (set(), None, set())
+    assert [(r.names, r.values, r.line) for r in grid.param_rows] == [
+        (("a", "b"), ("1", "-2"), 4),
+        (("a", "b"), ("3", "4"), 4),
+        (("mode",), ("'x'",), 5),
+        (("mode",), ("'y'",), 5),
+        (("mode",), ("'z'",), 5),
+    ]
+    assert found["tests/test_x.py::test_dynamic"].param_rows == ()
+
+
+def test_parametrize_cases_from_pytest_param_and_module_lists():
+    found = collect(
+        """
+        import pytest
+
+        CASES = [
+            (1, 2, 3),
+            pytest.param(2, 2, 4, id="two", marks=pytest.mark.slow),
+            (1, 2),
+        ]
+
+        @pytest.mark.parametrize(("a", "b", "total"), CASES)
+        def test_add(a, b, total): assert add(a, b) == total
+
+        @pytest.mark.parametrize("pair", [(1, 2), [3, 4]])
+        def test_pair(pair): assert pair
+        """
+    )
+    rows = found["tests/test_x.py::test_add"].param_rows
+    # the malformed (1, 2) case is left out: its values don't line up with the names
+    assert [(r.values, r.line) for r in rows] == [(("1", "2", "3"), 5), (("2", "2", "4"), 6)]
+    pair = found["tests/test_x.py::test_pair"].param_rows
+    assert [r.values for r in pair] == [("(1, 2)",), ("[3, 4]",)]

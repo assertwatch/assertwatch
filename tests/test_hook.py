@@ -109,6 +109,21 @@ def test_stop_hook_active_never_blocks(repo):
     assert "systemMessage" in json.loads(out)
 
 
+def test_expected_value_rewritten_to_match_the_code_blocks(repo):
+    run(repo, "SessionStart")
+    write(repo, "tests/test_cart.py", TESTS.replace("total() == 10", "total() == 11"))
+    code, _, err = run(repo)
+    assert code == 2 and "AW005 [block]" in err
+    assert "a checked value changed from `10` to `11`" in err
+
+
+def test_expected_value_changed_with_the_code_only_warns(repo):
+    run(repo, "SessionStart")
+    write(repo, "src/cart.py", "def total():\n    return 11\n")
+    write(repo, "tests/test_cart.py", TESTS.replace("total() == 10", "total() == 11"))
+    assert run(repo) == (0, "", "")
+
+
 def test_warn_findings_do_not_block(repo):
     write(repo, "assertwatch.toml", '[severity]\nAW004 = "warn"\n')
     commit_all(repo, "config")
