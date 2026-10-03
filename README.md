@@ -35,6 +35,64 @@ It checks at two points: when the agent tries to end its turn, and on the pull r
 The hook gives the agent a chance to put the test back before you see the change. The CI
 check is what makes it binding, since the agent can edit anything on its own machine.
 
+## Install
+
+```sh
+uv tool install assertwatch      # or: pipx install assertwatch
+```
+
+Python 3.11 or newer, and git. No other dependencies.
+
+## Try it
+
+A test file, then the kind of change an agent makes to get a failing test to pass:
+
+```sh
+mkdir aw-demo && cd aw-demo && git init -q
+cat > test_prices.py <<'EOF'
+import pytest
+
+def total(price, tax):
+    return round(price * (1 + tax), 2)
+
+def test_total_adds_tax():
+    assert total(10, 0.05) == 10.5
+    assert total(0, 0.05) == 0
+
+def test_total_rejects_negative():
+    with pytest.raises(ValueError):
+        total(-1, 0.05)
+EOF
+git add . && git commit -qm "add tests"
+
+cat > test_prices.py <<'EOF'
+import pytest
+
+def total(price, tax):
+    return round(price * (1 + tax), 2)
+
+def test_total_adds_tax():
+    assert total(10, 0.05) is not None
+
+@pytest.mark.skip(reason="flaky")
+def test_total_rejects_negative():
+    with pytest.raises(ValueError):
+        total(-1, 0.05)
+EOF
+assertwatch check --worktree
+```
+
+```text
+AssertWatch: 3 findings (3 block) in 1 test file, dc12bccbc2e7..working tree.
+
+test_prices.py:6  AW002 [block]  `test_total_adds_tax` has 1 assertion(s), down from 2.
+test_prices.py:7  AW004 [block]  Assertion weakened in `test_total_adds_tax`: an equality check became a not-None check.
+test_prices.py:10  AW003 [block]  `test_total_rejects_negative` is now skipped or disabled: @skip.
+```
+
+(Each finding also shows the removed and added lines and how to fix it.) The exit code is
+`1`, so the same command can fail a script or a CI job.
+
 ## Claude Code hook
 
 ```sh
@@ -76,7 +134,7 @@ jobs:
   assertwatch:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: assertwatch/assertwatch@main
         with:
           fail-on: never   # report only (default); "block" makes it a required check
