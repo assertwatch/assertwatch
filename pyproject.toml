@@ -7,7 +7,7 @@ name = "assertwatch"
 version = "0.0.1"
 description = "Catch AI coding agents weakening your tests: deleted tests, dropped assertions, new skips, loosened config."
 readme = "README.md"
-license = "MIT"
+license = "Apache-2.0"
 license-files = ["LICENSE"]
 requires-python = ">=3.11"
 authors = [{ name = "assertwatch" }]

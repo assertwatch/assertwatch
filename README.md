@@ -204,4 +204,5 @@ With [uv](https://docs.astral.sh/uv/): `uvx --from . assertwatch --version`.
 
 ## License
 
-MIT
+[Apache-2.0](LICENSE). Contributions are accepted under the same license. The license doesn't
+grant use of the AssertWatch name or logo.
