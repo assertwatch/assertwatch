@@ -6,9 +6,11 @@
 work; Java support is next. Building in public.
 
 AssertWatch reads a git diff and flags test weakening by AI coding agents: deleted tests, dropped
-or loosened assertions, new skips, rewritten expected values, mocks of the code under test, and
-relaxed test or coverage config. Deterministic, no LLM, runs offline. Python (pytest) first, then
+or loosened assertions, new skips, rewritten expected values and relaxed test or coverage
+config. Deterministic, no LLM, runs offline. Python (pytest) first, then
 Java (JUnit 5).
+
+![AssertWatch blocking a change that drops an assertion, weakens one and skips a test](https://raw.githubusercontent.com/assertwatch/assertwatch/main/docs/demo/demo.gif)
 
 It checks at two points: when the agent tries to end its turn, and on the pull request.
 

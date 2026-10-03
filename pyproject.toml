@@ -35,6 +35,9 @@ assertwatch = "assertwatch.cli:main"
 Homepage = "https://github.com/assertwatch/assertwatch"
 Issues = "https://github.com/assertwatch/assertwatch/issues"
 
+[tool.hatch.build.targets.sdist]
+exclude = ["docs/demo/*.gif"]
+
 [tool.hatch.build.targets.wheel]
 packages = ["src/assertwatch"]
 
