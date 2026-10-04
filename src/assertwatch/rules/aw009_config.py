@@ -10,6 +10,9 @@ Checked files, on both sides of the diff:
   --deselect, -k, -m "not ...", --lf or --ignore; testpaths losing entries; coverage
   fail_under (also .coveragerc and --cov-fail-under) lowered or removed.
 - conftest.py: collect_ignore entries or skip/xfail markers added.
+- Maven and Gradle (pom.xml, build.gradle(.kts), .mvn/maven.config and jvm.config, and
+  `mvn`/`gradle` runs in CI workflows): tests skipped, excluded, narrowed or their failures
+  ignored; JaCoCo limits lowered. See build_config.py.
 """
 
 from __future__ import annotations
@@ -23,12 +26,21 @@ import shlex
 import tomllib
 from collections.abc import Iterator
 from dataclasses import dataclass, field
+from functools import partial
 from pathlib import PurePosixPath
 
 from assertwatch.extract.python import dotted
 from assertwatch.model import Finding, Severity
-from assertwatch.paths import CONFIG_PATH, PYTEST_FILES, SETTINGS, is_workflow_path
-from assertwatch.rules import Context, FileChange, Rule
+from assertwatch.paths import (
+    CONFIG_PATH,
+    GRADLE_FILES,
+    MAVEN_FILES,
+    PYTEST_FILES,
+    SETTINGS,
+    is_maven_config,
+    is_workflow_path,
+)
+from assertwatch.rules import Context, FileChange, Rule, build_config
 
 ID = "AW009"
 
@@ -62,6 +74,42 @@ def check(context: Context) -> Iterator[Finding]:
             yield from _pytest_config(change)
         elif name == "conftest.py":
             yield from _conftest(change, context)
+        elif name in MAVEN_FILES:
+            gone = partial(_module_gone, change, context)
+            yield from _build(change, build_config.maven(change.before, change.after, gone))
+        elif name in GRADLE_FILES:
+            before = change.before if change.before is not None else _converted(change, context)
+            yield from _build(change, build_config.gradle(before, change.after))
+        elif is_maven_config(path):
+            yield from _build(change, build_config.config_flags(change.before, change.after))
+
+
+def _module_gone(change: FileChange, context: Context, module: str) -> bool:
+    """The change deletes or moves the pom.xml of a module this pom.xml listed."""
+    pom = posixpath.normpath(posixpath.join(posixpath.dirname(change.path), module, "pom.xml"))
+    return any(other.base_path == pom and other.head_path != pom for other in context.files)
+
+
+def _converted(change: FileChange, context: Context) -> str | None:
+    """A new build.gradle.kts replacing a build.gradle deleted beside it (or the other way):
+    git sees two files when the conversion rewrites most lines, but it is one build."""
+    folder = posixpath.dirname(change.path)
+    return next(
+        (
+            other.before
+            for other in context.files
+            if other.after is None
+            and other.base_path
+            and posixpath.dirname(other.base_path) == folder
+            and PurePosixPath(other.base_path).name in GRADLE_FILES
+        ),
+        None,
+    )
+
+
+def _build(change: FileChange, found: Iterator[build_config.Loosening]) -> Iterator[Finding]:
+    for what, needle in found:
+        yield _finding(change, what, needle)
 
 
 def _finding(change: FileChange, what: str, needle: str = "") -> Finding:
@@ -152,6 +200,7 @@ def _workflow(change: FileChange) -> Iterator[Finding]:
         )
     if _swallowed(after) > _swallowed(before):
         yield _finding(change, "A test command in CI now ignores failures (`|| true`)", "||")
+    yield from _build(change, build_config.workflow(_code_lines(before), _code_lines(after)))
 
 
 def _test_continues(text: str) -> int:

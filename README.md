@@ -191,7 +191,7 @@ as removed.
 | AW006 | The code under test mocked: a test now patches or stubs a function it calls itself and used to call for real (`mocker.patch("shop.total", return_value=4.0)` then `total()`; Java `when(cart.total()).thenReturn(4.0)`), so it checks the mock |
 | AW007 | A check wrapped so its failure is ignored: `try`/`except AssertionError` (or `Exception`, a bare `except`, `contextlib.suppress`) that neither re-raises nor fails; Java `catch (AssertionError \| Throwable \| Error ...)` |
 | AW008 | A test body emptied |
-| AW009 | Test config or the guard loosened (`--deselect`, lower `fail_under`, hook removed, ...) |
+| AW009 | Test config or the guard loosened (`--deselect`, lower `fail_under`, `-DskipTests`, Surefire/Gradle excludes, lower JaCoCo minimum, hook removed, ...) |
 | AW011 | An assertion that can never fail (`assert True`, `x == x`) |
 
 **Java (in progress).** Test files named like Maven Surefire's and Failsafe's defaults
@@ -203,8 +203,13 @@ AW001-AW008 and AW011, like Python. A test that calls a helper method of its cla
 of an enclosing class) is credited with the helper's checks, as in Python. Skips:
 `@Disabled`, `@Ignore`, `@DisabledIf*`/`@EnabledIf*` and the other conditions, and
 `assumeTrue`-style calls. Parametrized cases are counted for `@ValueSource`, `@CsvSource`
-(including text blocks) and `@NullSource`/`@EmptySource`. Not yet: Maven and Gradle config
-(AW009); most Java corpus cases are written for the purpose, not modeled on real commits.
+(including text blocks) and `@NullSource`/`@EmptySource`. Maven and Gradle config (AW009):
+`pom.xml` (Surefire/Failsafe skips, `testFailureIgnore`, excludes, narrowed includes or
+`groups`, a module dropped from the build, JaCoCo limits lowered), `build.gradle(.kts)`
+(`ignoreFailures`, a disabled test task, `exclude`, `excludeTestsMatching`, `excludeTags`,
+JaCoCo `minimum` lowered), `.mvn/maven.config` and `mvn`/`gradle` runs in CI (`-DskipTests`,
+`-Dmaven.test.failure.ignore`, `-x test`). Most Java corpus cases are written for the purpose,
+not modeled on real commits.
 On the last 300 test-touching commits of commons-lang, jsoup and jackson-core (900), 53
 block; labelling a sample puts about 2.8% of commits blocked wrongly (Python: about 2.6%),
 mostly tests moved between files and rewritten
