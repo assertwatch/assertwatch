@@ -362,6 +362,7 @@ def _test_case(
                 _classify_call(sub, case, dead)
     case.captures = frozenset(captures)
     case.external_calls = frozenset(calls)
+    case.mocked_calls = frozenset(m.rsplit(".", 1)[-1] for m in case.mocks) & case.external_calls
     return case
 
 
