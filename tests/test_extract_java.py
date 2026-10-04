@@ -2,7 +2,7 @@ from textwrap import dedent
 
 import pytest
 
-from assertwatch.extract.java import extract, join, tokenize
+from assertwatch.extract.java import extract, join, tokenize, unicode_escapes
 from assertwatch.paths import is_test_path
 
 PATH = "src/test/java/shop/CartTest.java"
@@ -338,3 +338,34 @@ def test_junit3_methods_must_be_public_void():
 def test_early_returns_and_aborts(text, early, skips):
     [case] = collect(body(text)).values()
     assert (case.returns_first, case.skip_calls) == (early, skips)
+
+
+@pytest.mark.parametrize(
+    ("source", "translated"),
+    [
+        ("a\\u0041", "aA"),
+        ("a\\\\u0041", "a\\\\u0041"),  # an escaped backslash, then plain text
+        ("a\\\\\\u0041", "a\\\\A"),
+        ("\\u005cu0041", "\\u0041"),  # a translated backslash starts no second escape
+        ("\\uuuu0041", "A"),
+        ("\\u00", "\\u00"),  # not an escape: left for the tokenizer to reject
+    ],
+)
+def test_unicode_escapes_like_javac(source, translated):
+    assert unicode_escapes(source) == translated
+
+
+def test_unicode_escape_that_ends_a_string_is_read_like_javac():
+    # For javac this is one string, `x\"; assertTrue(ok()); //`: there is no call.
+    source = body('String s = "x\\u005c"; assertTrue(ok()); //";')
+    [case] = collect(source).values()
+    assert case.assertions == []
+
+
+def test_only_top_level_classes_surefire_selects_by_name():
+    source = """
+    class CartTest { @Test void a() { } }
+    class Helper { @Test void b() { } }
+    class HelperTests { @Test void c() { } }
+    """
+    assert [t.name for t in extract(dedent(source), PATH).tests] == ["a", "c"]

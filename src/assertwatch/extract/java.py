@@ -11,8 +11,10 @@ from __future__ import annotations
 import re
 from collections.abc import Iterator
 from dataclasses import dataclass
+from fnmatch import fnmatchcase
 
 from assertwatch.model import Assertion, ParamCase, TestCase, TestFile, TryBlock
+from assertwatch.paths import JAVA_TEST_GLOBS
 
 # Annotations that make a method a test.
 _TEST_ANNOTATIONS = frozenset(
@@ -77,7 +79,28 @@ _TOKEN = re.compile(
 )
 
 
+_UNICODE_ESCAPE = re.compile(r"(\\+)u+([0-9a-fA-F]{4})")
+
+
+def unicode_escapes(source: str) -> str:
+    """Translate `\\uXXXX` escapes the way javac does before it reads anything else.
+
+    Without this, `"x\\u005c"; check(); //"` is a closed string and a call to this reader but
+    one long string to javac. A backslash starts an escape only after an even number of
+    backslashes, and a translated backslash never starts another escape (JLS 3.3).
+    """
+
+    def translate(match: re.Match[str]) -> str:
+        slashes = match.group(1)
+        if len(slashes) % 2 == 0:
+            return match.group(0)  # `\\u0041` is an escaped backslash, then `u0041`
+        return slashes[:-1] + chr(int(match.group(2), 16))
+
+    return _UNICODE_ESCAPE.sub(translate, source)
+
+
 def tokenize(source: str) -> list[Token]:
+    source = unicode_escapes(source)
     tokens: list[Token] = []
     pos, line = 0, 1
     while pos < len(source):
@@ -222,8 +245,10 @@ def _members(
             header_text = {t.text for t in tokens[i:body]}
             markers = inherited | _markers(annotations, None)
             is_junit3 = "TestCase" in header_text and "extends" in header_text
-            nested_ok = not classes or (
-                any(a.name == "Nested" for a in annotations) and "static" not in modifiers
+            nested_ok = (
+                any(fnmatchcase(f"{name}.java", glob) for glob in JAVA_TEST_GLOBS)
+                if not classes  # Surefire picks top-level classes by name, not by file
+                else any(a.name == "Nested" for a in annotations) and "static" not in modifiers
             )
             if tok.text == "class" and "abstract" not in modifiers and nested_ok:
                 inner = (*classes, name)
