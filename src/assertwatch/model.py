@@ -79,6 +79,9 @@ class TestCase:
     param_cases: int | None = None  # parametrized case count; None if absent or not countable
     param_literals: frozenset[str] = frozenset()  # repr() of literals in the parametrize values
     param_rows: tuple[ParamCase, ...] = ()  # cases of argvalues written as a list
+    # names bound to caught warnings or exceptions: `catch_warnings(record=True) as w`,
+    # `pytest.raises(...) as exc`, `self.assertRaises(...) as cm`, the `recwarn` fixture
+    captures: frozenset[str] = frozenset()
 
     @property
     def id(self) -> str:

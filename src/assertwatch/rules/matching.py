@@ -204,7 +204,7 @@ def pytest_style(body: str) -> str:
 
 class _PytestStyle(ast.NodeTransformer):
     def visit_Expr(self, node: ast.Expr) -> ast.AST:
-        test = _as_assert(node.value)
+        test = as_assert(node.value)
         return ast.copy_location(ast.Assert(test=test), node) if test is not None else node
 
     def visit_withitem(self, node: ast.withitem) -> ast.AST:
@@ -228,7 +228,7 @@ def _self_method(node: ast.expr) -> str | None:
     return None
 
 
-def _as_assert(node: ast.expr) -> ast.expr | None:
+def as_assert(node: ast.expr) -> ast.expr | None:
     name = _self_method(node)
     if name is None:
         return None

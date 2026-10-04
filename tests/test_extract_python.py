@@ -477,3 +477,26 @@ def test_helper_assertions_count_for_the_calling_test():
     assert cart.call_count == 4  # make(), and each helper call
     total = found["tests/test_x.py::CartTests::test_total"]
     assert [a.text for a in total.assertions] == ["self.assertEqual(cart.total(), total)"]
+
+
+def test_captured_warnings_and_exceptions():
+    tests = collect(
+        """
+        import unittest
+        def test_a(recwarn):
+            with warnings.catch_warnings(record=True) as w, pytest.raises(E) as exc:
+                f()
+            with warnings.catch_warnings() as ignored, pytest.warns(W):
+                f()
+            with warnings.catch_warnings(record=False) as quiet:
+                f()
+            with open(p) as fh:
+                pass
+        class T(unittest.TestCase):
+            def test_b(self):
+                with self.assertRaises(E) as cm:
+                    f()
+        """
+    )
+    assert tests["tests/test_x.py::test_a"].captures == {"recwarn", "w", "exc"}
+    assert tests["tests/test_x.py::T::test_b"].captures == {"cm"}

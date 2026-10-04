@@ -33,6 +33,7 @@ _UNITTEST_MARKERS = {
 _PATCH_ROOTS = frozenset({"patch", "mock", "unittest"})
 _NESTED_SCOPES = (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef, ast.Lambda)
 _FUNCTIONS = (ast.FunctionDef, ast.AsyncFunctionDef)
+_CAPTURE_CALLS = frozenset({"assertRaises", "assertRaisesRegex", "assertWarns", "assertWarnsRegex"})
 
 
 def extract(source: str, path: str) -> TestFile:
@@ -319,11 +320,14 @@ def _test_case(
             if target is not None:
                 case.mocks.append(target)
 
+    captures = {"recwarn"} & {a.arg for a in node.args.args}
     for sub in _walk_body(stmts):
         if isinstance(sub, ast.Assert):
             case.assertions.append(Assertion("assert", "", ast.unparse(sub), sub.lineno))
         elif isinstance(sub, ast.Try | ast.TryStar):
             case.try_blocks.append(_try_block(sub))
+        elif isinstance(sub, ast.withitem):
+            captures.update(_capture(sub))
         elif isinstance(sub, ast.Call):
             inlined = helpers.assertions(dotted(sub.func), sub.lineno)
             if inlined is not None:
@@ -331,7 +335,24 @@ def _test_case(
                 case.call_count += 1
             else:
                 _classify_call(sub, case)
+    case.captures = frozenset(captures)
     return case
+
+
+def _capture(item: ast.withitem) -> set[str]:
+    """The name a `with` binds to caught warnings or an expected exception, if it does."""
+    call, target = item.context_expr, item.optional_vars
+    if not isinstance(call, ast.Call) or not isinstance(target, ast.Name):
+        return set()
+    name = dotted(call.func)
+    if name in _RAISES_CALLS or name.rsplit(".", 1)[-1] in _CAPTURE_CALLS:
+        return {target.id}
+    if name.endswith("catch_warnings") and any(
+        kw.arg == "record" and isinstance(kw.value, ast.Constant) and kw.value.value is True
+        for kw in call.keywords
+    ):
+        return {target.id}
+    return set()
 
 
 _Function = ast.FunctionDef | ast.AsyncFunctionDef

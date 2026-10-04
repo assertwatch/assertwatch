@@ -10,17 +10,17 @@ from assertwatch.rules import all_rules, run_rules
 PATH = "tests/test_x.py"
 
 
-def run(before, after, path_map=None):
+def run(before, after, path_map=None, **options):
     """before/after: source for PATH, or a {path: source} dict for several files."""
     sides = []
     for side in (before, after):
         files = side if isinstance(side, dict) else {PATH: side}
         sides.append([extract(dedent(src), path) for path, src in files.items()])
-    return run_rules(*sides, path_map=path_map)
+    return run_rules(*sides, path_map=path_map, **options)
 
 
-def rules(before, after, path_map=None):
-    return sorted(f.rule for f in run(before, after, path_map))
+def rules(before, after, path_map=None, **options):
+    return sorted(f.rule for f in run(before, after, path_map, **options))
 
 
 REFUND = """
@@ -485,6 +485,150 @@ def test_aw002_checks_folded_into_the_test_s_own_parametrize():
         "    assert not result.exception\n", "    assert not result.exception\n" * 3
     )
     assert "AW002" in rules(repeated, CHAIN_PARAMETRIZED)
+
+
+def one_test(body):
+    return "import sys\nimport warnings\nimport pytest\n\ndef test_a():\n" + body
+
+
+@pytest.mark.parametrize(
+    ("before", "after"),
+    [
+        # weak checks implied by an exact value of the same subject
+        ("    assert f() is not None\n    assert f() > 0\n", "    assert f() == 5\n"),
+        ("    assert len(f()) > 0\n    assert 2 in f()\n", "    assert f() == [1, 2]\n"),
+        ("    assert isinstance(f(), str)\n    assert f()\n", "    assert f() == 'ok'\n"),
+        ("    self.assertTrue(f())\n    self.assertGreater(f(), 1)\n", "    assert f() == 5\n"),
+        # the same equality without the wrapper
+        ("    assert Path(a) == Path(b)\n    assert a == b\n", "    assert a == b\n"),
+        # a captured warning or exception checked by the new context instead
+        (
+            "    with warnings.catch_warnings(record=True) as w:\n        f()\n"
+            "    assert len(w) == 1\n    assert issubclass(w[0].category, UserWarning)\n"
+            "    assert 'old' in str(w[0].message)\n",
+            "    with pytest.warns(UserWarning, match='old'):\n        f()\n",
+        ),
+        (
+            "    with pytest.raises(ValueError) as e:\n        f()\n"
+            "    assert 'neg' in str(e.value)\n",
+            "    with pytest.raises(ValueError, match='neg'):\n        f()\n",
+        ),
+        (
+            "    with warnings.catch_warnings(record=True) as w:\n        f()\n"
+            "    assert w[0].category is DeprecationWarning\n",
+            "    with pytest.deprecated_call():\n        f()\n",
+        ),
+    ],
+    ids=[
+        "not-none-and-positive",
+        "length-and-member",
+        "type-and-truthy",
+        "unittest-calls",
+        "wrapped-equality",
+        "warning-record-to-warns",
+        "exception-message-to-match",
+        "deprecated-call",
+    ],
+)
+def test_aw002_lost_checks_the_test_still_guarantees(before, after):
+    assert rules(one_test(before), one_test(after)) == []
+
+
+@pytest.mark.parametrize(
+    ("before", "after"),
+    [
+        # the exact value doesn't satisfy the lost check, or is about something else
+        ("    assert f() > 10\n    assert f() is not None\n", "    assert f() == 5\n"),
+        ("    assert g() == 1\n    assert f() == 5\n", "    assert f() == 5\n"),
+        ("    assert f(x) > 0\n    assert f() == 5\n", "    assert f() == 5\n"),
+        # a comparison the evaluator can't vouch for
+        ("    assert f() == g()\n    assert f() == 5\n", "    assert f() == 5\n"),
+        # wrappers with different arguments
+        ("    assert Path(a) == Path(c)\n    assert a == b\n", "    assert a == b\n"),
+        # the new context expects less than the lost check looked for
+        (
+            "    with warnings.catch_warnings(record=True) as w:\n        f()\n"
+            "    assert len(w) == 1\n"
+            "    assert issubclass(w[0].category, DeprecationWarning)\n",
+            "    with pytest.warns(Warning):\n        f()\n",
+        ),
+        (
+            "    with warnings.catch_warnings(record=True) as w:\n        f()\n"
+            "    assert len(w) == 1\n"
+            "    assert 'old' in str(w[0].message)\n",
+            "    with pytest.warns(UserWarning):\n        f()\n",
+        ),
+        (
+            "    with warnings.catch_warnings(record=True) as w:\n        f()\n"
+            "    assert len(w) == 2\n    assert w[0].category is UserWarning\n",
+            "    with pytest.warns(UserWarning):\n        f()\n",
+        ),
+        (
+            "    with pytest.raises(ValueError) as e:\n        f()\n"
+            "    assert e.value.__cause__ is not None\n",
+            "    with pytest.raises(ValueError, match='x'):\n        f()\n",
+        ),
+        (
+            "    with pytest.raises(ValueError, match='neg') as e:\n        f()\n"
+            "    assert 'neg' in str(e.value)\n",
+            "    with pytest.raises(ValueError, match='other'):\n        f()\n",
+        ),
+        # an existing context isn't new evidence
+        (
+            "    with pytest.raises(ValueError, match='neg') as e:\n        f()\n"
+            "    assert e.type is ValueError\n",
+            "    with pytest.raises(ValueError, match='neg') as e:\n        f()\n",
+        ),
+        # the evaluator is exact about what the value satisfies
+        ("    assert f() > 5\n    assert f() > 0\n", "    assert f() == 5\n"),
+        ("    assert f() is not None\n    assert f() == None\n", "    assert f() == None\n"),
+        ("    assert f() != expected\n    assert f() > 0\n", "    assert f() == 5\n"),
+        ("    assert f() > 0 and f() > 10\n    assert f()\n", "    assert f() == 5\n"),
+        (
+            "    assert Path(a, 'x') == Path(b, 'y')\n    assert a == b\n",
+            "    assert a == b\n",
+        ),
+        # the new context has to expect the same class, and the same message
+        (
+            "    with pytest.raises(ValueError) as e:\n        f()\n"
+            "    assert 'neg' in str(e.value)\n",
+            "    with pytest.raises(KeyError, match='neg'):\n        f()\n",
+        ),
+        (
+            "    with pytest.raises(ValueError, match='a'):\n        f()\n"
+            "    with pytest.raises(ValueError, match='b'):\n        g()\n",
+            "    with pytest.raises(ValueError, match='c'):\n        f()\n",
+        ),
+        # and the lost check has to be about the caught value
+        (
+            "    with pytest.raises(ValueError) as e:\n        f()\n    assert repr(ValueError)\n",
+            "    with pytest.raises(ValueError, match='m'):\n        f()\n",
+        ),
+    ],
+    ids=[
+        "value-fails-lost-check",
+        "other-subject",
+        "other-call",
+        "unknown-comparison",
+        "wrapper-other-args",
+        "warns-broader-class",
+        "warns-without-match",
+        "warns-count-two",
+        "raises-cause",
+        "raises-other-match",
+        "same-context",
+        "strictly-greater",
+        "is-not-none-of-none",
+        "unknown-name",
+        "and-needs-both",
+        "wrapper-extra-args",
+        "raises-other-class",
+        "contexts-other-match",
+        "check-not-on-capture",
+    ],
+)
+def test_aw002_lost_checks_that_stay_lost(before, after):
+    assert "AW002" in rules(one_test(before), one_test(after))
 
 
 # --- AW003 ------------------------------------------------------------------------------

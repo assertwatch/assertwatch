@@ -40,7 +40,7 @@ def run(repo: Path | str, event: str | None = "Stop", **fields) -> tuple[int, st
 
 
 def drop_assertion(repo: Path) -> None:
-    write(repo, "tests/test_cart.py", TESTS.replace("    assert total() > 0\n", ""))
+    write(repo, "tests/test_cart.py", TESTS.replace("    assert total() == 10\n", ""))
 
 
 def state(repo: Path, session: str = "s1") -> dict:
@@ -68,13 +68,20 @@ def test_clean_session_passes_silently(repo):
     assert run(repo) == (0, "", "")
 
 
+def test_dropping_a_check_the_exact_value_implies_passes(repo):
+    # `total() > 0` is implied by the `total() == 10` that stays, so nothing was weakened
+    run(repo, "SessionStart")
+    write(repo, "tests/test_cart.py", TESTS.replace("    assert total() > 0\n", ""))
+    assert run(repo) == (0, "", "")
+
+
 def test_dropped_assertion_blocks_once_then_warns(repo):
     run(repo, "SessionStart")
     drop_assertion(repo)
     code, out, err = run(repo)
     assert (code, out) == (2, "")
     assert err.startswith("AssertWatch blocked the end of this turn")
-    assert "AW002" in err and "- assert total() > 0" in err
+    assert "AW002" in err and "- assert total() == 10" in err
 
     code, out, err = run(repo)  # the agent explained instead of restoring: don't loop
     assert (code, err) == (0, "")
@@ -95,7 +102,7 @@ def test_new_finding_blocks_again_after_an_old_one_was_shown(repo):
     run(repo, "SessionStart")
     drop_assertion(repo)
     assert run(repo)[0] == 2
-    source = TESTS.replace("    assert total() > 0\n", "").replace("def test_tax", "def _tax")
+    source = TESTS.replace("    assert total() == 10\n", "").replace("def test_tax", "def _tax")
     write(repo, "tests/test_cart.py", source)
     code, _, err = run(repo)
     assert code == 2 and "AW001" in err
@@ -288,7 +295,7 @@ def test_linked_worktree(repo, tmp_path_factory):
     assert hook.Repo.find(str(other)).git_dir != repo / ".git"
 
     run(other, "SessionStart", session_id="wt")
-    write(other, "tests/test_cart.py", TESTS.replace("    assert total() > 0\n", ""))
+    write(other, "tests/test_cart.py", TESTS.replace("    assert total() == 10\n", ""))
     assert run(other, session_id="wt")[0] == 2
     assert run(repo, session_id="wt") == (0, "", "")  # state is per worktree
 

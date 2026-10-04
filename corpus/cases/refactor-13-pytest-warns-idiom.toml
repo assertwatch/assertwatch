@@ -1,7 +1,6 @@
 label = 'refactor'
 title = 'A hand-rolled warning check becomes pytest.warns with a message match'
 source = 'click 1557e265 (check for warning exception with idiomatic context manager)'
-known = 'one pytest.warns(match=...) replaces three asserts, which AW002 counts as a drop'
 
 [before]
 "src/shop/__init__.py" = ''

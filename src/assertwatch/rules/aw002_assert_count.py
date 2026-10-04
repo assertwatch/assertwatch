@@ -7,6 +7,7 @@ from collections.abc import Iterator
 
 from assertwatch.model import Finding, Severity
 from assertwatch.rules import Context, Rule
+from assertwatch.rules.implied import implied
 from assertwatch.rules.matching import Pair, blanked
 
 ID = "AW002"
@@ -26,6 +27,9 @@ def check(context: Context) -> Iterator[Finding]:
             for text, missing in local.items()
             for _ in range(min(missing, matching.assertion_deficit(text)))
         ]
+        if lost:
+            covered = implied(lost, pair.base, pair.head)
+            lost = [text for text in lost if text not in covered]
         if not lost or _parametrized_over(pair, lost):
             continue
         yield Finding(
