@@ -70,7 +70,7 @@ _TOKEN = re.compile(
   | (?P<text_block>\"\"\"[ \t\f]*\n(?:[^\\]|\\.)*?\"\"\")
   | (?P<str>"(?:[^"\\\n]|\\.)*")
   | (?P<char>'(?:[^'\\\n]|\\.)+')
-  | (?P<num>0[xX][\da-fA-F_]+[lL]?|(?:\d[\d_]*\.?[\d_]*|\.\d[\d_]*)(?:[eE][+-]?\d+)?[fFdDlL]?)
+  | (?P<num>0[xX][\da-fA-F_]+[lL]?|(?:\d[\d_]*(?:\.[\d_]*)?|\.\d[\d_]*)(?:[eE][+-]?\d+)?[fFdDlL]?)
   | (?P<id>[A-Za-z_$][\w$]*)
   | (?P<op>->|::|\.\.\.|==|!=|<=|>=|&&|\|\||\+\+|--|[+\-*/%&|^]=|<<=?
           |[{}()\[\];,.@=<>!~?:&|+\-*/^%])
@@ -79,7 +79,7 @@ _TOKEN = re.compile(
 )
 
 
-_UNICODE_ESCAPE = re.compile(r"(\\+)u+([0-9a-fA-F]{4})")
+_HEX = frozenset("0123456789abcdefABCDEF")
 
 
 def unicode_escapes(source: str) -> str:
@@ -87,16 +87,34 @@ def unicode_escapes(source: str) -> str:
 
     Without this, `"x\\u005c"; check(); //"` is a closed string and a call to this reader but
     one long string to javac. A backslash starts an escape only after an even number of
-    backslashes, and a translated backslash never starts another escape (JLS 3.3).
+    backslashes, and a translated backslash never starts another escape (JLS 3.3). One pass
+    over the text: no regular expression to backtrack on long runs of backslashes.
     """
-
-    def translate(match: re.Match[str]) -> str:
-        slashes = match.group(1)
-        if len(slashes) % 2 == 0:
-            return match.group(0)  # `\\u0041` is an escaped backslash, then `u0041`
-        return slashes[:-1] + chr(int(match.group(2), 16))
-
-    return _UNICODE_ESCAPE.sub(translate, source)
+    if "\\u" not in source:
+        return source
+    out: list[str] = []
+    i, n = 0, len(source)
+    while i < n:
+        ch = source[i]
+        if ch != "\\":
+            out.append(ch)
+            i += 1
+            continue
+        run = i
+        while run < n and source[run] == "\\":
+            run += 1
+        slashes = run - i
+        u = run
+        while u < n and source[u] == "u":
+            u += 1
+        digits = source[u : u + 4]
+        if slashes % 2 == 1 and u > run and len(digits) == 4 and set(digits) <= _HEX:
+            out.append("\\" * (slashes - 1) + chr(int(digits, 16)))
+            i = u + 4
+        else:
+            out.append("\\" * slashes)
+            i = run
+    return "".join(out)
 
 
 def tokenize(source: str) -> list[Token]:
@@ -438,7 +456,7 @@ def _csv_split(line: str) -> list[str]:
     return [_csv_value(v) for v in values]
 
 
-_CSV_NUMBER = re.compile(r"[+-]?(\d[\d_]*\.?[\d_]*|\.\d+)([eE][+-]?\d+)?")
+_CSV_NUMBER = re.compile(r"[+-]?(\d[\d_]*(?:\.[\d_]*)?|\.\d+)([eE][+-]?\d+)?")
 
 
 def _csv_value(value: str) -> str:
@@ -485,9 +503,13 @@ def _test_case(
 
 
 def _scan_body(stmts: list[Token], case: TestCase) -> None:
+    dead = _not_run(stmts)
     i = 0
     while i < len(stmts):
         tok = stmts[i]
+        if dead[i]:
+            i += 1
+            continue
         if tok.text == "try" and i + 1 < len(stmts) and stmts[i + 1].text in ("{", "("):
             case.try_blocks.append(_try_block(stmts, i))
         if (
@@ -530,6 +552,73 @@ def _scan_body(stmts: list[Token], case: TestCase) -> None:
         and not _is_assert_call(stmts[k].text)
         and stmts[k].text not in _SKIP_CALLS
     )
+
+
+def _not_run(stmts: list[Token]) -> list[bool]:
+    """Per token: is it in code the test declares but may never run? Checks there count
+    for nothing, or a failing check could be parked where it never executes.
+
+    - a lambda that isn't an argument of a call (`Runnable r = () -> check();`); one passed
+      straight to a call (`forEach(x -> check(x))`, `assertAll(() -> ...)`) runs
+    - the body of an anonymous class (`new Runnable() { ... }`) or a local class
+    - the branch of `if (false)`
+    """
+    dead = [False] * len(stmts)
+
+    def mark(start: int, stop: int) -> None:
+        for k in range(start, min(stop, len(stmts))):
+            dead[k] = True
+
+    for k, tok in enumerate(stmts):
+        if tok.text == "->" and not _argument_lambda(stmts, k):
+            mark(k + 1, _lambda_end(stmts, k + 1))
+        elif tok.text == "{" and k and stmts[k - 1].text == ")" and _anonymous_class(stmts, k - 1):
+            mark(k, _close(stmts, k) + 1)
+        elif tok.text == "class" and tok.kind == "id" and (k == 0 or stmts[k - 1].text != "."):
+            body = next((j for j in range(k, len(stmts)) if stmts[j].text == "{"), None)
+            if body is not None:
+                mark(k, _close(stmts, body) + 1)
+        elif (
+            tok.text == "if"
+            and k + 3 < len(stmts)
+            and [t.text for t in stmts[k + 1 : k + 4]] == ["(", "false", ")"]
+        ):
+            mark(k + 4, _lambda_end(stmts, k + 4))
+    return dead
+
+
+def _argument_lambda(stmts: list[Token], arrow: int) -> bool:
+    """The lambda ending its parameters at `arrow` is passed straight to a call."""
+    head = arrow - 1
+    if head >= 0 and stmts[head].text == ")":
+        depth = 0
+        for k in range(head, -1, -1):
+            if stmts[k].text == ")":
+                depth += 1
+            elif stmts[k].text == "(":
+                depth -= 1
+                if depth == 0:
+                    head = k
+                    break
+    return head > 0 and stmts[head - 1].text in ("(", ",")
+
+
+def _lambda_end(stmts: list[Token], start: int) -> int:
+    """Index past a lambda body or a single statement starting at start."""
+    if start < len(stmts) and stmts[start].text == "{":
+        return _close(stmts, start) + 1
+    depth = 0
+    for k in range(start, len(stmts)):
+        text = stmts[k].text
+        if text in _OPEN:
+            depth += 1
+        elif text in (")", "}", "]"):
+            depth -= 1
+            if depth < 0:
+                return k
+        elif depth == 0 and text in (";", ","):
+            return k + 1
+    return len(stmts)
 
 
 def _own_returns(stmts: list[Token]) -> Iterator[int]:

@@ -349,6 +349,8 @@ def test_early_returns_and_aborts(text, early, skips):
         ("\\u005cu0041", "\\u0041"),  # a translated backslash starts no second escape
         ("\\uuuu0041", "A"),
         ("\\u00", "\\u00"),  # not an escape: left for the tokenizer to reject
+        ("\\0041\\u0041", "\\0041A"),  # no `u` before the first: not an escape
+        ("\\uzzzz", "\\uzzzz"),  # not hex
     ],
 )
 def test_unicode_escapes_like_javac(source, translated):
@@ -369,3 +371,34 @@ def test_only_top_level_classes_surefire_selects_by_name():
     class HelperTests { @Test void c() { } }
     """
     assert [t.name for t in extract(dedent(source), PATH).tests] == ["a", "c"]
+
+
+@pytest.mark.parametrize(
+    ("text", "counted"),
+    [
+        ("Runnable r = () -> assertTrue(ok());", 0),  # stored, maybe never run
+        ("Runnable r = () -> { assertTrue(ok()); };", 0),
+        ("if (false) assertTrue(ok());", 0),
+        ("if (false) { assertTrue(ok()); }", 0),
+        ("Runnable r = new Runnable() { public void run() { assertTrue(ok()); } };", 0),
+        ("class Local { void c() { assertTrue(ok()); } }", 0),
+        ("items.forEach(x -> assertTrue(x.ok()));", 1),  # passed to a call: runs
+        ("run(1, () -> assertTrue(ok()));", 1),
+        ("assertAll(() -> assertTrue(a()), () -> assertTrue(b()));", 1),
+        ("if (ok) assertTrue(ok());", 1),
+        ("Runnable r = () -> f();\nassertTrue(ok());", 1),
+        ("Class<?> c = String.class;\nassertTrue(ok());", 1),
+        ("Class<?> c = String.class;\nif (ok()) { assertTrue(ok()); }", 1),
+    ],
+)
+def test_checks_in_code_that_may_never_run_dont_count(text, counted):
+    [case] = collect(body(text)).values()
+    assert len(case.assertions) == counted
+
+
+def test_long_backslash_runs_are_linear():
+    import time
+
+    start = time.perf_counter()
+    unicode_escapes("\\" * 200_000 + "u")
+    assert time.perf_counter() - start < 1.0
