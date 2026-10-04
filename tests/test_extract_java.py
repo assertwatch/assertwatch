@@ -351,6 +351,8 @@ def test_early_returns_and_aborts(text, early, skips):
         ("\\u00", "\\u00"),  # not an escape: left for the tokenizer to reject
         ("\\0041\\u0041", "\\0041A"),  # no `u` before the first: not an escape
         ("\\uzzzz", "\\uzzzz"),  # not hex
+        ("\\uD83D\\uDE00", "\U0001f600"),  # a surrogate pair is one character
+        ("\\uD83Dx\\uDE00", "\\uD83Dx\\uDE00"),  # lone surrogates keep their escape text
     ],
 )
 def test_unicode_escapes_like_javac(source, translated):
@@ -402,3 +404,27 @@ def test_long_backslash_runs_are_linear():
     start = time.perf_counter()
     unicode_escapes("\\" * 200_000 + "u")
     assert time.perf_counter() - start < 1.0
+
+
+@pytest.mark.parametrize(
+    ("text", "counted"),
+    [
+        ("IllegalStateException e = assertThrows(IllegalStateException.class, () -> f());", 1),
+        ("final var e = assertThrows(X.class, () -> f());", 1),
+        ("e = assertThrows(X.class, () -> f());", 1),
+        ("this.e = assertThrows(X.class, () -> f());", 1),
+        ("Map<String, List<X>> m = assertDoesNotThrow(() -> f());\nassertTrue(ok());", 2),
+        ("int[] a = assertDoesNotThrow(() -> g());", 1),
+        ("boolean b = check(x);", 0),
+        ("Runnable r = () -> assertTrue(ok());", 0),  # stored, not run
+    ],
+)
+def test_checks_whose_result_is_kept_count(text, counted):
+    [case] = collect(body(text)).values()
+    assert len(case.assertions) == counted
+
+
+def test_a_kept_check_is_read_from_the_call():
+    # the comma in the declared type doesn't end the statement
+    [case] = collect(body("Map<K, V> m = assertDoesNotThrow(() -> f());")).values()
+    assert [a.text for a in case.assertions] == ["assertDoesNotThrow(() -> f());"]

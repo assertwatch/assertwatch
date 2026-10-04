@@ -430,10 +430,10 @@ def _duplicate_of(test: TestCase, head: list[TestCase]) -> tuple[TestCase, ...]:
     """
     if test.param_names and test.param_cases is None:
         return ()
-    body = _without_imports(test.body_text)
+    body = _without_imports(test)
     for other in head:
         if (
-            _without_imports(other.body_text) == body
+            _without_imports(other) == body
             and other.markers == test.markers
             and _cases(other) == _cases(test)
         ):
@@ -441,10 +441,14 @@ def _duplicate_of(test: TestCase, head: list[TestCase]) -> tuple[TestCase, ...]:
     return ()
 
 
-def _without_imports(body: str) -> str:
+def _without_imports(test: TestCase) -> str:
     """The body without its plain top-level imports: `import pytest` inside one copy of a
     test and at the top of the other's module binds the same module. `from x import y` and
-    `import x as y` stay: they can bind a name to something else (a stand-in)."""
+    `import x as y` stay: they can bind a name to something else (a stand-in). A Java body
+    stays as written: read as Python, its `'a'` (a char) and `"a"` (a String) would match."""
+    body = test.body_text
+    if test.path.endswith(".java"):
+        return body
     try:
         tree = ast.parse(body)
     except SyntaxError:
