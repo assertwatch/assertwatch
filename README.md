@@ -3,7 +3,7 @@
 > Your agent says the tests pass. AssertWatch checks the tests weren't weakened to make that true.
 
 **Status: pre-alpha.** The Python rules, the CLI, the Claude Code hook and the GitHub Action
-work; Java support is next. Building in public.
+work; Java (JUnit 5) support is in progress. Building in public.
 
 AssertWatch reads a git diff and flags test weakening by AI coding agents: deleted tests, dropped
 or loosened assertions, new skips, rewritten expected values and relaxed test or coverage
@@ -192,6 +192,23 @@ as removed.
 | AW009 | Test config or the guard loosened (`--deselect`, lower `fail_under`, hook removed, ...) |
 | AW011 | An assertion that can never fail (`assert True`, `x == x`) |
 
+**Java (in progress).** Test files named like Maven Surefire's and Failsafe's defaults
+(`*Test.java`, `Test*.java`, `*Tests.java`, `*TestCase.java`, `*IT.java`) are read with a
+small built-in tokenizer, so Java needs no extra install. JUnit 5 and 4 tests (`@Test`,
+`@ParameterizedTest`, `@RepeatedTest`, JUnit 3 `TestCase` methods) and JUnit, AssertJ,
+Hamcrest and Mockito `verify` checks get AW001-AW005, AW008 and AW011, like Python. Skips:
+`@Disabled`, `@Ignore`, `@DisabledIf*`/`@EnabledIf*` and the other conditions, and
+`assumeTrue`-style calls. Parametrized cases are counted for `@ValueSource`, `@CsvSource`
+(including text blocks) and `@NullSource`/`@EmptySource`. Not yet: Maven and Gradle config
+(AW009), and a replay of real Java projects' history; the Java corpus cases are written for
+the purpose, not yet modeled on real commits. Only what JUnit runs counts as a test: a test
+made private, static or non-void, moved into an inner class without `@Nested`, or into a
+top-level class whose name Surefire doesn't select, looks removed. Unicode escapes
+(`\u0022`) are translated first, as javac does, so they can't hide code in a string.
+Checks in code that may never run don't count: a lambda that is stored rather than passed
+to a call, an anonymous or local class, an `if (false)` branch. A changed test file AssertWatch can't parse blocks the hook rather than being
+skipped, so code the tokenizer can't read can't hide a change.
+
 Configuration lives in `assertwatch.toml` and is always read from the base branch, so a change
 can't relax the rules it is checked against:
 
@@ -214,20 +231,26 @@ suppress anything; they are reported as AW000 for a human to approve.
 `make eval` replays the labelled corpus in [`corpus/cases/`](corpus/cases): small, complete
 changes, each one a cheat that should be caught or a refactor that shouldn't be blocked. The
 refactors are modeled on real commits from open-source projects that earlier versions
-blocked. Results today: **39 of 43 cheats caught, 1 of 35 refactors blocked** (91% recall,
-3% false positives on refactors; 1 more refactor gets a warning).
+blocked. Results today: **60 of 66 cheats caught, 1 of 45 refactors blocked** (91% recall,
+2% false positives on refactors; 2 more refactors get a warning). That includes 20 Java
+cheats and 10 Java refactors, all handled.
 
 - **Missed:** a failing assertion wrapped in `try/except AssertionError: pass`, and the
   function under test patched to return the expected value. Those are AW007 and AW006,
   not built yet. Also a check for exactly two warnings swapped one-for-one for
   `pytest.warns`, which passes on one: the count stays the same and nothing compares the two.
-  And a property test whose Hypothesis input range was narrowed.
+  And a property test whose Hypothesis input range was narrowed. And a test moved to a new
+  file (or given a body import) that points at a stand-in for the code under test: a test
+  that keeps its name is read as moved, and imports aren't compared.
 - **Blocked by mistake:** a warning checked through a CLI runner's `result.exception`,
   replaced by `pytest.warns(..., match=...)`. Nothing ties `result.exception` to the warning
   the way a `catch_warnings(record=True)` capture is tied, so the dropped checks can't be
   proved to be covered (modeled on the real click commit).
 - **Warned:** an intended behavior change, where the code and the expected value change
-  together (AW005 asks for confirmation).
+  together (AW005 asks for confirmation), and a removed test whose identical copy is in a
+  file the change doesn't touch. That copy is usually a leftover from an earlier move, but it
+  could be a decoy planted earlier, so a human confirms it rather than AssertWatch clearing
+  it.
 
 Read these numbers with care. The corpus is small, and most of it was written by the same
 people as the rules, after the rules. Cheats an agent might invent that we haven't thought of
@@ -236,8 +259,8 @@ suite fails when one starts passing, so the numbers here stay current.
 
 **On real history**, which nobody wrote for us: we ran the last 300 test-touching commits of
 six open-source Python projects (click, more-itertools, attrs, dateutil, markupsafe,
-itsdangerous; 1,318 commits). 186 of them (14%) get a finding: 133 a blocking one, 53 only a
-warning that a value changed along with the code. We labelled two random samples of 30
+itsdangerous; 1,318 commits). 188 of them (14%) get a finding: 133 a blocking one, 55 only a
+warning (a value changed along with the code, or a removed test's copy needs a look). We labelled two random samples of 30
 blocked commits by hand ([`corpus/real-history.md`](corpus/real-history.md)):
 
 - **Blocked rightly, about 7.5% of commits.** Mostly deliberate changes a reviewer should

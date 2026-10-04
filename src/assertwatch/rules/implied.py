@@ -66,6 +66,8 @@ _SAFE_NAMES = {
 
 def implied(lost: list[str], base: TestCase, head: TestCase) -> set[str]:
     """The lost assertion texts that the head version of the test still guarantees."""
+    if any(a.lang != "python" for a in (*base.assertions, *head.assertions)):
+        return set()  # the evaluator reads Python; nothing is implied in other languages
     base_texts = {a.text for a in base.assertions}
     live = [a for a in head.assertions if not a.py2_only]  # dead code guarantees nothing
     contexts = [c for a in live if a.text not in base_texts and (c := _context(a)) is not None]

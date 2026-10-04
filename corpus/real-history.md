@@ -155,3 +155,13 @@ drops the version (#11), and a warning checked through `result.exception` (#15, 
 `refactor-34`, known). These are human commits. With author routing (P3), a human change
 gets a warning by default, so the rate that matters is wrong blocks on agent-authored
 changes, which this sample can't measure.
+
+**Follow-up (security review).** Clearing a removed test because a copy exists outside the
+diff let a two-step cheat through: plant an identical-looking copy (importing a stand-in, or
+in a file that isn't collected), then delete the real test later. Such a removal is now an
+AW001 **warning** naming the copy, for a human to confirm (`cheat-44`). Duplicates also stop
+ignoring `from x import y` and aliased imports in the body. Replay: still 133 blocking; click
+`1103c5cac2` and `39413d9b1d` go from no finding to that warning. A related gap predates P0
+and stays known: a test that keeps its name when moved is paired as a move and its imports
+aren't compared, so a body or module import of a stand-in goes unnoticed (`cheat-45`,
+`cheat-46`).

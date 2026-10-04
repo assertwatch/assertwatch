@@ -108,6 +108,17 @@ def test_new_finding_blocks_again_after_an_old_one_was_shown(repo):
     assert code == 2 and "AW001" in err
 
 
+def test_unreadable_test_file_blocks_once(repo):
+    # Code the parser can't read must not hide a change: it blocks (fail closed).
+    run(repo, "SessionStart")
+    write(repo, "tests/test_cart.py", TESTS + "\ndef broken(:\n")
+    code, out, err = run(repo)
+    assert code == hook.EXIT_BLOCK
+    assert "couldn't read" in err and "tests/test_cart.py" in err
+    code, out, err = run(repo)  # already shown: a warning, not another block
+    assert code == hook.EXIT_OK and "unresolved" in out
+
+
 def test_stop_hook_active_never_blocks(repo):
     run(repo, "SessionStart")
     drop_assertion(repo)
