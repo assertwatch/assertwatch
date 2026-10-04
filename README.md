@@ -201,7 +201,10 @@ Hamcrest and Mockito `verify` checks get AW001-AW005, AW008 and AW011, like Pyth
 `assumeTrue`-style calls. Parametrized cases are counted for `@ValueSource`, `@CsvSource`
 (including text blocks) and `@NullSource`/`@EmptySource`. Not yet: Maven and Gradle config
 (AW009), and a replay of real Java projects' history; the Java corpus cases are written for
-the purpose, not yet modeled on real commits.
+the purpose, not yet modeled on real commits. Only what JUnit runs counts as a test: a test
+made private, static or non-void, or moved into an inner class without `@Nested`, looks
+removed. A changed test file AssertWatch can't parse blocks the hook rather than being
+skipped, so code the tokenizer can't read can't hide a change.
 
 Configuration lives in `assertwatch.toml` and is always read from the base branch, so a change
 can't relax the rules it is checked against:
@@ -225,9 +228,9 @@ suppress anything; they are reported as AW000 for a human to approve.
 `make eval` replays the labelled corpus in [`corpus/cases/`](corpus/cases): small, complete
 changes, each one a cheat that should be caught or a refactor that shouldn't be blocked. The
 refactors are modeled on real commits from open-source projects that earlier versions
-blocked. Results today: **52 of 58 cheats caught, 1 of 43 refactors blocked** (90% recall,
-2% false positives on refactors; 2 more refactors get a warning). That includes 12 Java
-cheats and 8 Java refactors, all handled.
+blocked. Results today: **56 of 62 cheats caught, 1 of 44 refactors blocked** (90% recall,
+2% false positives on refactors; 2 more refactors get a warning). That includes 16 Java
+cheats and 9 Java refactors, all handled.
 
 - **Missed:** a failing assertion wrapped in `try/except AssertionError: pass`, and the
   function under test patched to return the expected value. Those are AW007 and AW006,

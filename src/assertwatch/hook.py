@@ -45,6 +45,15 @@ can approve it. Waivers added in this change don't suppress anything.
 """
 
 
+UNREADABLE = """\
+AssertWatch couldn't read these changed test files, so it can't tell whether their tests
+were weakened:
+{files}
+If a file has a syntax error, fix it. If it is valid code, tell the user: the change needs
+a human review, because AssertWatch can't check it.
+"""
+
+
 def run(payload_text: str, stdout: TextIO, stderr: TextIO) -> int:
     payload = _payload(payload_text)
     event = payload.get("hook_event_name")
@@ -92,18 +101,23 @@ def _check(
         return EXIT_ERROR
     report = Report(base, None, result.findings, result.errors, result.test_files)
     blocking = failing(report, "block")
-    if not blocking:
+    if not blocking and not result.unreadable:
         return EXIT_OK
 
-    keys = {finding_key(f) for f in blocking}
+    # A test file that doesn't parse can't be checked, so it blocks (fail closed): otherwise
+    # code the parser can't read would hide any change in that file.
+    keys = {finding_key(f) for f in blocking} | {f"unreadable|{p}" for p in result.unreadable}
     new = keys - session.shown if session is not None else keys
     if session is not None:
         session.shown |= keys
         session.save()
     if new and not stop_hook_active:
-        stderr.write(BLOCK_HEADER + render(report, "text"))
+        if blocking:
+            stderr.write(BLOCK_HEADER + render(report, "text"))
+        if result.unreadable:
+            stderr.write(UNREADABLE.format(files="\n".join(f"  {p}" for p in result.unreadable)))
         return EXIT_BLOCK
-    count = len(blocking)
+    count = len(blocking) + len(result.unreadable)
     message = (
         f"AssertWatch: {plural(count, 'blocking finding')} in this session's changes "
         f"{'is' if count == 1 else 'are'} unresolved. "

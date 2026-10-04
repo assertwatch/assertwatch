@@ -86,6 +86,38 @@ THROWS = "        assertThrows(IllegalStateException.class, () -> new Cart().che
         ),
         (swap("IllegalStateException.class", "RuntimeException.class"), ["AW004"]),
         (swap("assertEquals(3, cart.count());", "assertTrue(true);"), ["AW011"]),
+        (swap("    void emptyCheckoutThrows", "    private void emptyCheckoutThrows"), ["AW001"]),
+        (
+            swap(
+                "    @Test\n    void emptyCheckoutThrows() {",
+                "    @Test\n    int emptyCheckoutThrows() {",
+            ).replace("checkout());\n    }\n}", "checkout());\n        return 0;\n    }\n}"),
+            ["AW001"],
+        ),
+        (
+            swap(
+                "    @Test\n    void emptyCheckoutThrows",
+                "    class Later {\n    @Test\n    void emptyCheckoutThrows",
+            ).replace("checkout());\n    }\n}", "checkout());\n    }\n    }\n}"),
+            ["AW001"],
+        ),
+        (swap("assertEquals(3, cart.count());", "assertThat(cart.count());"), ["AW011"]),
+        (swap("assertTrue(Cart.valid(n));", "assertTrue(Cart.valid(n) || true);"), ["AW011"]),
+        (
+            swap(
+                "        Cart cart = new Cart();",
+                "        if (cart == null) return;\n        Cart cart = new Cart();",
+            ),
+            ["AW003"],
+        ),
+        (
+            swap(
+                "        Cart cart = new Cart();",
+                "        if (true) throw new TestAbortedException();\n"
+                "        Cart cart = new Cart();",
+            ),
+            ["AW003"],
+        ),
     ],
     ids=[
         "test-deleted",
@@ -100,6 +132,13 @@ THROWS = "        assertThrows(IllegalStateException.class, () -> new Cart().che
         "self-comparison",
         "exception-broadened",
         "always-true",
+        "made-private",
+        "made-non-void",
+        "moved-into-inner-class-without-nested",
+        "assertj-without-check",
+        "or-true",
+        "early-return",
+        "test-aborted",
     ],
 )
 def test_cheats(after, expected):
@@ -252,6 +291,16 @@ def test_shape(text, template, values):
         ("assertTrue(x);", None),
         ("assertNotNull(null);", None),
         ("assertThat(x, is(not(x)));", None),
+        ("assertThat(x);", ALWAYS),
+        ('assertThat(x).as("d");', ALWAYS),
+        ("assertTrue(ok() || true);", ALWAYS),
+        ("assertTrue((true) || ok());", ALWAYS),
+        ("assertFalse(ok() && false);", ALWAYS),
+        ("assertTrue(ok() && true);", None),
+        ("assert ok() || true;", ALWAYS),
+        ("verify(repo, atLeast(0)).save(o);", ALWAYS),
+        ("verify(repo, atLeast(1)).save(o);", None),
+        ("assertThatThrownBy(() -> f());", None),
     ],
 )
 def test_tautology(text, verdict):

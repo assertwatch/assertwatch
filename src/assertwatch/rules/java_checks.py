@@ -457,9 +457,13 @@ def tautology(text: str) -> str | None:
         return _statement_tautology(text)
     first, rest = calls[0], [c for c in calls[1:] if c.name not in _ASSERTJ_MESSAGE]
     name, args = first.name, first.args
-    if name == "assertTrue" and args and literal(_last_value(args, 1)) is True:
+    if name == "assertTrue" and args and _always(_last_value(args, 1), True):
         return ALWAYS
-    if name == "assertFalse" and args and literal(_last_value(args, 1)) is False:
+    if name == "assertFalse" and args and _always(_last_value(args, 1), False):
+        return ALWAYS
+    if name == "assertThat" and len(args) == 1 and not rest:
+        return ALWAYS  # AssertJ: assertThat(x) alone checks nothing
+    if name == "verify" and len(args) == 2 and _never_fails(args[1]):
         return ALWAYS
     if name == "assertNotNull" and args:
         value = literal(_last_value(args, 1))
@@ -515,9 +519,47 @@ def _statement_tautology(text: str) -> str | None:
     texts = [t.text for t in body]
     if ":" in texts:
         body = body[: texts.index(":")]
-    if len(body) == 1 and body[0].text == "true":
+    if _always(body, True):
         return ALWAYS
     parts = _split_op(body, "==")
     if parts is not None:
         return _pair_tautology(*parts)
     return None
+
+
+def _always(expr: list[Token], value: bool) -> bool:
+    """expr is the literal value, or (for true) has a top-level `|| true` operand, or
+    (for false) a top-level `&& false` operand: `x || true` can never be false."""
+    if literal(expr) is value:
+        return True
+    op = "||" if value else "&&"
+    parts, depth, current = [], 0, []
+    for tok in expr:
+        if tok.text in ("(", "[", "{"):
+            depth += 1
+        elif tok.text in (")", "]", "}"):
+            depth -= 1
+        if depth == 0 and tok.text == op:
+            parts.append(current)
+            current = []
+        else:
+            current.append(tok)
+    parts.append(current)
+    return len(parts) > 1 and any(literal(_unparen(p)) is value for p in parts)
+
+
+def _unparen(tokens: list[Token]) -> list[Token]:
+    while len(tokens) >= 2 and tokens[0].text == "(" and tokens[-1].text == ")":
+        tokens = tokens[1:-1]
+    return tokens
+
+
+def _never_fails(mode: list[Token]) -> bool:
+    """A Mockito verification mode that any number of calls satisfies: atLeast(0)."""
+    calls = chain(_text(mode))
+    return (
+        bool(calls)
+        and calls[0].name == "atLeast"
+        and calls[0].args != []
+        and (literal(calls[0].args[0]) == 0)
+    )

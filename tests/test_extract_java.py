@@ -265,3 +265,76 @@ def test_parametrized_cases(annotations, cases, rows):
 )
 def test_unparsable_files_are_errors_not_empty(source):
     assert extract(source, PATH).parse_error is not None
+
+
+@pytest.mark.parametrize(
+    ("member", "runs"),
+    [
+        ("@Test void a() { }", True),
+        ("@Test public void a() { }", True),
+        ("@Test private void a() { }", False),  # JUnit 5 doesn't run it
+        ("@Test static void a() { }", False),
+        ("@Test int a() { return 1; }", False),
+        ("@TestFactory Stream<DynamicTest> a() { return Stream.empty(); }", True),
+        ("@ParameterizedTest @ValueSource(ints = 1) String a(int n) { return null; }", False),
+    ],
+)
+def test_only_methods_junit_runs_are_tests(member, runs):
+    assert bool(extract(f"class ATest {{\n    {member}\n}}\n", PATH).tests) is runs
+
+
+@pytest.mark.parametrize(
+    ("inner", "runs"),
+    [
+        ("@Nested class Inner", True),
+        ("class Inner", False),  # JUnit 5 runs inner classes only with @Nested
+        ("@Nested static class Inner", False),
+        ("static class Inner", False),  # Surefire skips nested classes by default
+    ],
+)
+def test_only_nested_classes_junit_runs(inner, runs):
+    source = f"class ATest {{\n    {inner} {{\n        @Test void a() {{ }}\n    }}\n}}\n"
+    assert bool(extract(source, PATH).tests) is runs
+
+
+def test_junit3_methods_must_be_public_void():
+    source = """
+    public class LegacyTest extends TestCase {
+        public void testA() { }
+        void testB() { }
+        public int testC() { return 1; }
+        public static void testD() { }
+    }
+    """
+    assert [t.name for t in extract(dedent(source), PATH).tests] == ["testA"]
+
+
+@pytest.mark.parametrize(
+    ("text", "early", "skips"),
+    [
+        ("if (skip) return;\nassertTrue(ok());", True, []),
+        ("assertTrue(ok());\nreturn;", False, []),
+        ("Runnable r = () -> { return; };\nassertTrue(ok());", False, []),
+        (
+            "Comparator<String> c = new Comparator<>() {\n"
+            "    public int compare(String a, String b) { return 0; }\n};\nassertTrue(ok());",
+            False,
+            [],
+        ),
+        (
+            "if (ci) throw new TestAbortedException();\nassertTrue(ok());",
+            False,
+            ["throw new TestAbortedException"],
+        ),
+        (
+            'throw new AssumptionViolatedException("x");',
+            False,
+            ["throw new AssumptionViolatedException"],
+        ),
+        ("assertThrows(X.class, () -> { throw new IllegalStateException(); });", False, []),
+        ('if (bad) throw new IllegalStateException("bad");\nassertTrue(ok());', False, []),
+    ],
+)
+def test_early_returns_and_aborts(text, early, skips):
+    [case] = collect(body(text)).values()
+    assert (case.returns_first, case.skip_calls) == (early, skips)

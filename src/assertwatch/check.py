@@ -29,6 +29,7 @@ class CheckResult:
     findings: list[Finding] = field(default_factory=list)
     errors: list[str] = field(default_factory=list)  # skipped files, config problems
     test_files: int = 0  # changed test files that were compared
+    unreadable: list[str] = field(default_factory=list)  # test files that didn't parse
 
 
 def check_diff(repo: Path, base: str, head: str | None = None) -> CheckResult:
@@ -44,6 +45,7 @@ def check_diff(repo: Path, base: str, head: str | None = None) -> CheckResult:
     head_files: list[TestFile] = []
     guard_files: list[FileChange] = []
     path_map: dict[str, str] = {}
+    unreadable: list[str] = []
     changes = changed_files(repo, base, head)
     for change in changes:
         old_path, new_path = change.base_path, change.head_path
@@ -61,6 +63,7 @@ def check_diff(repo: Path, base: str, head: str | None = None) -> CheckResult:
         broken = [f for f in (old, new) if f is not None and f.parse_error]
         if broken:
             errors.extend(f"{f.path}: {f.parse_error}" for f in broken)
+            unreadable.extend(f.path for f in broken)
             continue
         if old is not None:
             base_files.append(old)
@@ -81,7 +84,7 @@ def check_diff(repo: Path, base: str, head: str | None = None) -> CheckResult:
     )
     # A renamed file counts once, under its head path.
     paths = {f.path for f in head_files} | {f.path for f in base_files if f.path not in path_map}
-    return CheckResult(findings, errors, len(paths))
+    return CheckResult(findings, errors, len(paths), unreadable)
 
 
 def _unchanged_copies(

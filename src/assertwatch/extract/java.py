@@ -18,10 +18,14 @@ from assertwatch.model import Assertion, ParamCase, TestCase, TestFile, TryBlock
 _TEST_ANNOTATIONS = frozenset(
     {"Test", "ParameterizedTest", "RepeatedTest", "TestFactory", "TestTemplate"}
 )
+_NON_VOID_TESTS = frozenset({"TestFactory", "TestTemplate"})
 _SKIP_ANNOTATIONS = frozenset({"Disabled", "Ignore"})
 _CONDITION = re.compile(r"(Disabled|Enabled)(If|On|For)\w*")
 # Statement-level calls that end a test early without failing it.
 _SKIP_CALLS = frozenset({"assumeTrue", "assumeFalse", "assumeThat", "assumingThat", "abort"})
+_SKIP_EXCEPTIONS = frozenset(
+    {"TestAbortedException", "AssumptionViolatedException", "TestSkippedException"}
+)
 _RAISES_CALLS = frozenset({"assertThrows", "assertThrowsExactly", "assertThatThrownBy"})
 _ASSERT_QUALIFIERS = frozenset(
     {"Assertions", "Assert", "Assumptions", "Assume", "MatcherAssert", "Mockito", "BDDAssertions"}
@@ -188,8 +192,15 @@ def _members(
     inherited: frozenset[str],
     junit3: bool,
 ) -> Iterator[TestCase]:
-    """Tests declared between start and end: a file's top level or a class body."""
+    """Tests declared between start and end: a file's top level or a class body.
+
+    Only what JUnit runs counts. An inner class runs only when it is a non-static `@Nested`
+    class (Surefire skips other nested classes); a test method only when it is neither
+    private nor static and returns void (`@TestFactory` and `@TestTemplate` excepted).
+    A test that stops qualifying looks removed, which is what it is.
+    """
     annotations: list[_Annotation] = []
+    modifiers: set[str] = set()
     i = start
     while i < end:
         tok = tokens[i]
@@ -198,6 +209,7 @@ def _members(
             annotations.append(annotation)
             continue
         if tok.text in _MODIFIERS:  # keep the annotations for the class or method that follows
+            modifiers.add(tok.text)
             i += 1
             continue
         if tok.text in _TYPE_KEYWORDS and tok.kind == "id" and i + 1 < end:
@@ -210,37 +222,49 @@ def _members(
             header_text = {t.text for t in tokens[i:body]}
             markers = inherited | _markers(annotations, None)
             is_junit3 = "TestCase" in header_text and "extends" in header_text
-            if tok.text == "class" and "abstract" not in _modifiers(tokens, start, i):
+            nested_ok = not classes or (
+                any(a.name == "Nested" for a in annotations) and "static" not in modifiers
+            )
+            if tok.text == "class" and "abstract" not in modifiers and nested_ok:
                 inner = (*classes, name)
                 yield from _members(tokens, body + 1, close, path, inner, markers, is_junit3)
-            annotations, i = [], close + 1
+            annotations, modifiers, i = [], set(), close + 1
             continue
         if tok.text in (";", "}"):
-            annotations, i = [], i + 1
+            annotations, modifiers, i = [], set(), i + 1
             continue
         if tok.text == "{":  # an initializer block
-            annotations, i = [], _close(tokens, i) + 1
+            annotations, modifiers, i = [], set(), _close(tokens, i) + 1
             continue
         member_end, method = _member(tokens, i, end)
         if method is not None and classes:
             name_at, params, body = method
-            name = tokens[name_at].text
-            is_test = any(a.name in _TEST_ANNOTATIONS for a in annotations) or (
-                junit3 and name.startswith("test") and not params
-            )
-            if is_test and body is not None:
+            if body is not None and _runs_as_test(
+                tokens, name_at, params, annotations, modifiers, junit3
+            ):
                 where = (path, classes, inherited)
                 yield _test_case(tokens, name_at, params, body, where, annotations)
-        annotations, i = [], member_end
+        annotations, modifiers, i = [], set(), member_end
 
 
-def _modifiers(tokens: list[Token], start: int, i: int) -> set[str]:
-    words = set()
-    j = i - 1
-    while j >= start and tokens[j].kind == "id":
-        words.add(tokens[j].text)
-        j -= 1
-    return words
+def _runs_as_test(
+    tokens: list[Token],
+    name_at: int,
+    params: list[Token],
+    annotations: list[_Annotation],
+    modifiers: set[str],
+    junit3: bool,
+) -> bool:
+    if "private" in modifiers or "static" in modifiers:
+        return False
+    returns_void = tokens[name_at - 1].text == "void"
+    names = {a.name for a in annotations}
+    if names & _TEST_ANNOTATIONS:
+        return returns_void or bool(names & _NON_VOID_TESTS)
+    name = tokens[name_at].text
+    return (
+        junit3 and name.startswith("test") and not params and "public" in modifiers and returns_void
+    )
 
 
 def _member(
@@ -441,6 +465,13 @@ def _scan_body(stmts: list[Token], case: TestCase) -> None:
         tok = stmts[i]
         if tok.text == "try" and i + 1 < len(stmts) and stmts[i + 1].text in ("{", "("):
             case.try_blocks.append(_try_block(stmts, i))
+        if (
+            tok.text == "throw"
+            and i + 2 < len(stmts)
+            and stmts[i + 1].text == "new"
+            and stmts[i + 2].text in _SKIP_EXCEPTIONS
+        ):
+            case.skip_calls.append(f"throw new {stmts[i + 2].text}")
         if not _statement_start(stmts, i):
             i += 1
             continue
@@ -461,6 +492,10 @@ def _scan_body(stmts: list[Token], case: TestCase) -> None:
                 i = stop
                 continue
         i += 1
+    if not case.returns_first and case.assertions:
+        # `if (...) return;` before the checks ends the test early, like a return first
+        last = max(k for k, t in enumerate(stmts) if t.line <= case.assertions[-1].line)
+        case.returns_first = any(k < last for k in _own_returns(stmts))
     case.call_count = sum(
         1
         for k in range(len(stmts) - 1)
@@ -470,6 +505,39 @@ def _scan_body(stmts: list[Token], case: TestCase) -> None:
         and not _is_assert_call(stmts[k].text)
         and stmts[k].text not in _SKIP_CALLS
     )
+
+
+def _own_returns(stmts: list[Token]) -> Iterator[int]:
+    """Indexes of `return` statements of the test itself, not of a lambda or an anonymous
+    class inside it."""
+    nested: list[bool] = []  # per open brace: does it belong to a lambda or anonymous class?
+    for k, tok in enumerate(stmts):
+        if tok.text == "{":
+            prev = stmts[k - 1].text if k else ""
+            nested.append(prev == "->" or (prev == ")" and _anonymous_class(stmts, k - 1)))
+        elif tok.text == "}":
+            if nested:
+                nested.pop()
+        elif tok.text == "return" and not any(nested):
+            yield k
+
+
+def _anonymous_class(stmts: list[Token], close: int) -> bool:
+    """The `)` at close ends `new Name(...)` or `new Name<T>(...)`."""
+    depth = 0
+    for k in range(close, -1, -1):
+        if stmts[k].text == ")":
+            depth += 1
+        elif stmts[k].text == "(":
+            depth -= 1
+            if depth == 0:
+                j = k - 1
+                while j >= 0 and (stmts[j].kind == "id" or stmts[j].text in (".", "<", ">", ",")):
+                    if stmts[j].text == "new":
+                        return True
+                    j -= 1
+                return False
+    return False
 
 
 def _assertion(kind: str, name: str, tokens: list[Token], line: int) -> Assertion:
