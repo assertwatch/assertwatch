@@ -32,4 +32,9 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
+      # Report only by default. Set the repository variable ASSERTWATCH_FAIL_ON
+      # to "block" or "warn" (Settings > Secrets and variables > Actions) to fail
+      # the job on findings without editing this file.
       - uses: ./
+        with:
+          fail-on: ${{ vars.ASSERTWATCH_FAIL_ON || 'never' }}
