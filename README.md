@@ -214,20 +214,25 @@ suppress anything; they are reported as AW000 for a human to approve.
 `make eval` replays the labelled corpus in [`corpus/cases/`](corpus/cases): small, complete
 changes, each one a cheat that should be caught or a refactor that shouldn't be blocked. The
 refactors are modeled on real commits from open-source projects that earlier versions
-blocked. Results today: **39 of 43 cheats caught, 1 of 35 refactors blocked** (91% recall,
-3% false positives on refactors; 1 more refactor gets a warning).
+blocked. Results today: **40 of 46 cheats caught, 1 of 35 refactors blocked** (87% recall,
+3% false positives on refactors; 2 more refactors get a warning).
 
 - **Missed:** a failing assertion wrapped in `try/except AssertionError: pass`, and the
   function under test patched to return the expected value. Those are AW007 and AW006,
   not built yet. Also a check for exactly two warnings swapped one-for-one for
   `pytest.warns`, which passes on one: the count stays the same and nothing compares the two.
-  And a property test whose Hypothesis input range was narrowed.
+  And a property test whose Hypothesis input range was narrowed. And a test moved to a new
+  file (or given a body import) that points at a stand-in for the code under test: a test
+  that keeps its name is read as moved, and imports aren't compared.
 - **Blocked by mistake:** a warning checked through a CLI runner's `result.exception`,
   replaced by `pytest.warns(..., match=...)`. Nothing ties `result.exception` to the warning
   the way a `catch_warnings(record=True)` capture is tied, so the dropped checks can't be
   proved to be covered (modeled on the real click commit).
 - **Warned:** an intended behavior change, where the code and the expected value change
-  together (AW005 asks for confirmation).
+  together (AW005 asks for confirmation), and a removed test whose identical copy is in a
+  file the change doesn't touch. That copy is usually a leftover from an earlier move, but it
+  could be a decoy planted earlier, so a human confirms it rather than AssertWatch clearing
+  it.
 
 Read these numbers with care. The corpus is small, and most of it was written by the same
 people as the rules, after the rules. Cheats an agent might invent that we haven't thought of
@@ -236,8 +241,8 @@ suite fails when one starts passing, so the numbers here stay current.
 
 **On real history**, which nobody wrote for us: we ran the last 300 test-touching commits of
 six open-source Python projects (click, more-itertools, attrs, dateutil, markupsafe,
-itsdangerous; 1,318 commits). 186 of them (14%) get a finding: 133 a blocking one, 53 only a
-warning that a value changed along with the code. We labelled two random samples of 30
+itsdangerous; 1,318 commits). 188 of them (14%) get a finding: 133 a blocking one, 55 only a
+warning (a value changed along with the code, or a removed test's copy needs a look). We labelled two random samples of 30
 blocked commits by hand ([`corpus/real-history.md`](corpus/real-history.md)):
 
 - **Blocked rightly, about 7.5% of commits.** Mostly deliberate changes a reviewer should

@@ -316,10 +316,15 @@ def test_aw001_duplicate_test_removed():
     assert rules(dynamic, kept) == ["AW001"]  # its cases can't be compared, so no duplicate
 
 
-def test_aw001_duplicate_ignores_imports_in_the_body():
-    local = REFUND.replace("    order =", "    from shop import make_order\n    order =")
-    other = local.replace("test_refund_rounding", "test_refund_rounding_again")
-    assert rules({PATH: REFUND, "tests/test_y.py": other}, {"tests/test_y.py": other}) == []
+def test_aw001_duplicate_ignores_only_plain_imports_in_the_body():
+    def copy_with(statement):
+        local = REFUND.replace("    order =", f"    {statement}\n    order =")
+        other = local.replace("test_refund_rounding", "test_refund_rounding_again")
+        return rules({PATH: REFUND, "tests/test_y.py": other}, {"tests/test_y.py": other})
+
+    assert copy_with("import shop") == []  # binds the same module either way
+    assert copy_with("from tests.fakes import make_order") == ["AW001"]  # a stand-in
+    assert copy_with("import tests.fakes as shop") == ["AW001"]
 
 
 def test_aw001_copy_in_a_file_outside_the_diff():
@@ -330,22 +335,25 @@ def test_aw001_copy_in_a_file_outside_the_diff():
         asked.append(names)
         return [copy]
 
-    assert rules(REFUND, "", find_copies=find) == []
+    def levels(copies):
+        return [(f.rule, f.severity) for f in run(REFUND, "", find_copies=lambda names: copies)]
+
+    # An identical copy outside the diff may be a planted decoy: a warning, never a pass.
+    [found] = run(REFUND, "", find_copies=find)
+    assert (found.rule, found.severity, found.side) == ("AW001", Severity.WARN, "base")
+    assert "tests/test_other.py::test_refund_rounding" in found.message
     assert asked == [["test_refund_rounding"]]
     for changed in (
         REFUND.replace("10.05", "10.0"),  # checks another value
         "import pytest\n@pytest.mark.skip" + REFUND,  # never runs
+        REFUND.replace("    order =", "    reset_prices()\n    order ="),  # contains it
+        REFUND.replace('    assert order.status == "refunded"\n', ""),  # checks less
+        REFUND.replace("    order =", "    from fakes import make_order\n    order ="),
     ):
-        weaker = extract(dedent(changed), "tests/test_other.py")
-        assert rules(REFUND, "", find_copies=lambda names, f=weaker: [f]) == ["AW001"]
-    more = REFUND.replace("    order =", "    reset_prices()\n    order =")
-    longer = extract(dedent(more), "tests/test_other.py")  # contains the body, but isn't it
-    assert rules(REFUND, "", find_copies=lambda names: [longer]) == ["AW001"]
-    less = REFUND.replace('    assert order.status == "refunded"\n', "")
-    shorter = extract(dedent(less), "tests/test_other.py")  # a copy that checks less
-    assert rules(REFUND, "", find_copies=lambda names: [shorter]) == ["AW001"]
+        other = extract(dedent(changed), "tests/test_other.py")
+        assert levels([other]) == [("AW001", Severity.BLOCK)]
     broken = extract("def test_x(:\n", "tests/test_other.py")
-    assert rules(REFUND, "", find_copies=lambda names: [broken]) == ["AW001"]
+    assert levels([broken]) == [("AW001", Severity.BLOCK)]
     asked.clear()
     assert rules(REFUND, REFUND, find_copies=find) == []
     assert asked == []  # nothing looked removed, so nothing was looked up

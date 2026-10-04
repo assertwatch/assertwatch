@@ -8,7 +8,7 @@ from dataclasses import dataclass, field, replace
 from assertwatch.config import Config
 from assertwatch.gitdiff import DiffLine
 from assertwatch.model import Finding, Severity, TestFile
-from assertwatch.rules.matching import Matching, fold_into_copies, match_tests
+from assertwatch.rules.matching import Matching, match_copies, match_tests
 
 
 @dataclass(frozen=True)
@@ -101,7 +101,7 @@ def run_rules(
     old_paths = {path_map.get(f.path, f.path) for f in base_files}
     matching = match_tests(base_files, head_files, path_map)
     if find_copies is not None and matching.removed:
-        fold_into_copies(matching, find_copies(sorted({t.name for t in matching.removed})))
+        match_copies(matching, find_copies(sorted({t.name for t in matching.removed})))
     context = Context(
         matching,
         list(files),

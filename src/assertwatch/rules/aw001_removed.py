@@ -14,6 +14,10 @@ HINT = (
     "Restore the test and fix the code under test instead. If the test is obsolete, "
     "say so and let a human approve the removal."
 )
+COPY_HINT = (
+    "If the copy is the one that should stay, approve the removal. If it isn't run, or imports "
+    "something else, restore this test."
+)
 
 
 def check(context: Context) -> Iterator[Finding]:
@@ -32,6 +36,23 @@ def check(context: Context) -> Iterator[Finding]:
             test_id=test.id,
             before=test.body_text or None,
             hint=HINT,
+            side="base",
+        )
+
+    for copy in matching.copied:
+        test, where = copy.base, copy.heads[0]
+        yield Finding(
+            rule=ID,
+            severity=Severity.WARN,
+            path=test.path,
+            line=test.line,
+            message=(
+                f"Test `{test.name}` was removed; an identical copy outside this change, "
+                f"`{where.id}`, still exists. Check that it is collected and tests the same code."
+            ),
+            test_id=test.id,
+            before=test.body_text or None,
+            hint=COPY_HINT,
             side="base",
         )
 

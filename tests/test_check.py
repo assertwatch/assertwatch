@@ -98,11 +98,12 @@ def test_removed_test_with_a_copy_in_an_untouched_file(repo):
     write(repo, "tests/test_tax.py", tax)
     commit_all(repo, "copy test_tax")
     write(repo, "tests/test_cart.py", TESTS.split("\n\ndef test_tax")[0] + "\n")
-    assert check_diff(repo, "HEAD").findings == []  # working tree
+    copied = [("AW001", "warn")]  # reported for a human, not blocking
+    assert levels(check_diff(repo, "HEAD")) == copied  # working tree
     head = commit_all(repo, "drop the leftover")
-    assert check_diff(repo, "HEAD~1", head).findings == []
+    assert levels(check_diff(repo, "HEAD~1", head)) == copied
     (repo / "tests/test_tax.py").unlink()  # the copy is read at head, not the working tree
-    assert check_diff(repo, "HEAD~1", head).findings == []
+    assert levels(check_diff(repo, "HEAD~1", head)) == copied
     git(repo, "checkout", "--", "tests/test_tax.py")
     # A copy outside the configured test paths doesn't count.
     write(repo, "assertwatch.toml", 'test_paths = ["tests/test_cart.py"]\n')
@@ -110,7 +111,11 @@ def test_removed_test_with_a_copy_in_an_untouched_file(repo):
     write(repo, "tests/test_cart.py", TESTS)
     commit_all(repo, "restore")
     write(repo, "tests/test_cart.py", TESTS.split("\n\ndef test_tax")[0] + "\n")
-    assert [f.rule for f in check_diff(repo, "HEAD").findings] == ["AW001"]
+    assert levels(check_diff(repo, "HEAD")) == [("AW001", "block")]
+
+
+def levels(result):
+    return [(f.rule, f.severity) for f in result.findings]
 
 
 def test_copy_in_a_file_the_change_also_touches_is_not_reused(repo):

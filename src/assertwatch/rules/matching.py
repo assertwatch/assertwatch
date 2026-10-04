@@ -8,9 +8,10 @@ the tests the earlier stages left unmatched:
 2. Identical body, then body similarity >= RENAME_THRESHOLD (or SAME_NAME_THRESHOLD when
    the test kept its name, up to case and underscores, and only its file or class changed).
    unittest assertions are read in their pytest spelling first. These become renamed pairs.
-3. An exact duplicate: a head test with the same body (imports aside), markers and
+3. An exact duplicate: a head test with the same body (plain imports aside), markers and
    parametrize cases, so removing this copy loses nothing. Folded into it. After matching,
-   fold_into_copies repeats this over test files outside the diff.
+   match_copies looks for such a copy in test files outside the diff; a removed test that
+   has one is listed as copied, not folded.
 4. Template match against parametrized tests, with literals and parametrize argnames blanked
    out, for `test_a`/`test_b` -> one parametrized test and the reverse. The base test's
    literal values must still appear in the head test (in its body or parametrize values),
@@ -64,6 +65,9 @@ class Matching:
     pairs: list[Pair] = field(default_factory=list)
     folded: list[Folded] = field(default_factory=list)
     removed: list[TestCase] = field(default_factory=list)
+    # removed tests with an identical copy outside the diff: likely a leftover, but the copy
+    # is a claim a human should check (is it collected? does it import the same code?)
+    copied: list[Folded] = field(default_factory=list)
     added: list[TestCase] = field(default_factory=list)
     base_assertions: Counter[str] = field(default_factory=Counter)
     head_assertions: Counter[str] = field(default_factory=Counter)
@@ -128,19 +132,21 @@ def match_tests(
     return result
 
 
-def fold_into_copies(matching: Matching, copies: Iterable[TestFile]) -> None:
-    """Fold removed tests that have an exact duplicate in a file the change didn't touch.
+def match_copies(matching: Matching, copies: Iterable[TestFile]) -> None:
+    """Move removed tests that have an exact duplicate in a file the change didn't touch
+    from `removed` to `copied`.
 
-    An earlier change copied the test elsewhere and left this one behind; deleting the
-    leftover loses nothing, because the copy still runs. Same test as stage 3 (identical
-    body, markers and parametrize cases), over tests outside the diff.
+    Usually an earlier change copied the test elsewhere and left this one behind. But the
+    copy was never part of this diff, so it may be a decoy planted earlier (in a file that
+    isn't collected, or importing a stand-in): it is reported for a human, not cleared.
+    Same test as stage 3 (identical body, markers and parametrize cases).
     """
     others = [t for f in copies if not f.parse_error for t in f.tests]
     still_removed = []
     for test in matching.removed:
         heads = _duplicate_of(test, others)
         if heads:
-            matching.folded.append(Folded(test, heads))
+            matching.copied.append(Folded(test, heads))
         else:
             still_removed.append(test)
     matching.removed = still_removed
@@ -436,15 +442,18 @@ def _duplicate_of(test: TestCase, head: list[TestCase]) -> tuple[TestCase, ...]:
 
 
 def _without_imports(body: str) -> str:
-    """The body without its top-level import statements: `import pytest` inside one copy
-    of a test and at the top of the other's module binds the same name."""
+    """The body without its plain top-level imports: `import pytest` inside one copy of a
+    test and at the top of the other's module binds the same module. `from x import y` and
+    `import x as y` stay: they can bind a name to something else (a stand-in)."""
     try:
         tree = ast.parse(body)
     except SyntaxError:
         return body
-    return "\n".join(
-        ast.unparse(s) for s in tree.body if not isinstance(s, ast.Import | ast.ImportFrom)
-    )
+    return "\n".join(ast.unparse(s) for s in tree.body if not _plain_import(s))
+
+
+def _plain_import(stmt: ast.stmt) -> bool:
+    return isinstance(stmt, ast.Import) and all(a.asname is None for a in stmt.names)
 
 
 def case_siblings(base: TestCase, head: TestCase, added: list[TestCase]) -> list[TestCase]:
