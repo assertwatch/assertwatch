@@ -428,3 +428,117 @@ def test_a_kept_check_is_read_from_the_call():
     # the comma in the declared type doesn't end the statement
     [case] = collect(body("Map<K, V> m = assertDoesNotThrow(() -> f());")).values()
     assert [a.text for a in case.assertions] == ["assertDoesNotThrow(() -> f());"]
+
+
+HELPERS = """
+class CartTest {
+    @Test
+    void %s
+
+    private void checkTotal(Cart cart, double total) {
+        assertEquals(total, cart.total(), 1e-9);
+        assertTrue(cart.count() > 0);
+    }
+
+    private void checkTotal(Cart cart) {
+        checkTotal(cart, 0.0);
+        fail("unreachable");
+    }
+
+    static void checkEmpty(Cart cart) { assertEquals(0, cart.count()); }
+
+    void recurse(int n) { recurse(n - 1); assertTrue(n > 0); }
+
+    private int noChecks(Cart cart) { return cart.count(); }
+
+    @Nested
+    class Inner {
+        @Test
+        void nested() { checkEmpty(new Cart()); }
+    }
+}
+"""
+
+
+@pytest.mark.parametrize(
+    ("text", "counted"),
+    [
+        ("t() { checkTotal(cart, 1.5); }", 2),
+        ("t() { this.checkTotal(cart, 1.5); }", 2),
+        ("t() { checkTotal(cart); }", 3),  # the one-argument overload, through the other
+        ("t() { for (Cart c : carts) checkEmpty(c); }", 1),
+        ("t() { carts.forEach(c -> checkEmpty(c)); }", 1),
+        ("t() { int n = noChecks(cart); }", 0),
+        ("t() { recurse(3); }", 1),
+        ("t() { other.checkTotal(cart, 1.5); }", 0),  # another object's method
+        ("t() { Runnable r = () -> checkEmpty(cart); }", 0),  # stored, not run
+    ],
+)
+def test_checks_in_helper_methods_of_the_class_count(text, counted):
+    tests = collect(HELPERS % text)
+    assert len(tests["CartTest::t"].assertions) == counted
+    assert [a.line for a in tests["CartTest::t"].assertions] == [4] * counted
+
+
+def test_nested_tests_use_the_outer_class_helpers():
+    tests = collect(HELPERS % "t() {}")
+    assert [a.text for a in tests["CartTest::Inner::nested"].assertions] == [
+        "assertEquals(0, cart.count());"
+    ]
+
+
+@pytest.mark.parametrize(
+    ("text", "counted"),
+    [
+        ("mocked.verify(() -> Util.accept(any(), eq(5)));", 1),
+        ("mocked.verify(Util::reset, times(2));", 1),
+        ("signature.verify(data);", 0),  # an ordinary method that happens to be named verify
+        ("mocked.when(() -> Util.zero(any())).thenCallRealMethod();", 0),
+    ],
+)
+def test_mocked_static_verification_counts(text, counted):
+    [case] = collect(body(text)).values()
+    assert len(case.assertions) == counted
+
+
+def test_overloads_with_the_same_arity_are_told_apart_by_visible_types():
+    source = """
+    class CartTest {
+        @Test
+        void t(final Locale locale) {
+            String id = "UTC";
+            check(locale, id);
+            check("en", "x");
+        }
+
+        private void check(Locale locale, String id) { fail("for " + id); }
+
+        private void check(String tag, String id) {}
+    }
+    """
+    [case] = collect(source).values()
+    assert [(a.text, a.via) for a in case.assertions] == [('fail("for " + id);', "check")]
+
+
+@pytest.mark.parametrize(
+    ("text", "counted"),
+    [
+        ('verifyException(e, "too long");', 1),  # a project helper named like a check
+        ("verifying(x);", 0),
+        ("verifyCart(cart);", 2),  # the class's own helper: its body counts
+    ],
+)
+def test_calls_named_verify_count_as_checks(text, counted):
+    source = body(text).replace(
+        "\n}\n",
+        "\n    void verifyCart(Cart c) { assertEquals(1, c.count()); assertTrue(c.ok()); }\n}\n",
+    )
+    [case] = [t for t in collect(source).values() if t.name == "t"]
+    assert len(case.assertions) == counted
+
+
+def test_calls_to_functions_outside_the_file_are_recorded():
+    [case] = [t for t in collect(HELPERS % "t() { checkTotal(cart); load(x); }").values()
+              if t.name == "t"]  # fmt: skip
+    assert "load" in case.external_calls
+    assert "checkTotal" not in case.external_calls

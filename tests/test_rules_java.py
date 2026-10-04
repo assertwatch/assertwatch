@@ -4,7 +4,7 @@ import pytest
 
 from assertwatch.extract.java import extract
 from assertwatch.rules import run_rules
-from assertwatch.rules.java_checks import ALWAYS, SWAPPED, classify, shape, tautology
+from assertwatch.rules.java_checks import ALWAYS, SWAPPED, class_check, classify, shape, tautology
 
 PATH = "src/test/java/shop/CartTest.java"
 
@@ -285,6 +285,14 @@ def test_shape(text, template, values):
         ("assertInstanceOf(Object.class, x);", ALWAYS),
         ("assert true;", ALWAYS),
         ("assert x == x;", SWAPPED),
+        ("assertTrue(x.equals(x));", SWAPPED),
+        ('assertTrue("reflexive", a.b().equals(a.b()));', SWAPPED),
+        ("assertTrue(Objects.equals(x, x));", SWAPPED),
+        ("assertThat(x.equals(x)).isTrue();", SWAPPED),
+        ("assert x.equals(x);", SWAPPED),
+        ("assertTrue(x.equals(y));", None),
+        ("assertTrue(x.equals(x) && ok());", None),
+        ("assertTrue(Objects.equals(x, y));", None),
         ("assertEquals(1, 2);", None),
         ("assertEquals(1, 1L);", ALWAYS),
         ("assertEquals(true, 1);", None),  # Boolean vs Integer: fails in Java
@@ -342,3 +350,173 @@ def test_a_removed_test_is_no_copy_of_one_that_differs_only_in_quotes():
     before = BASE.replace("\n}\n", both + "}\n")
     after = BASE.replace("\n}\n", check("firstCharIsA", "'a'") + "}\n")
     assert rules(after, before) == ["AW001"]
+
+
+JUNIT4 = """
+import org.junit.Test;
+import static org.junit.Assert.*;
+
+public class CartTest {
+    @Test(expected = IllegalArgumentException.class)
+    public void testNegativeQuantity() {
+        new Cart().add("apple", -1, 0.5);
+    }
+
+    @Test
+    public void testTotal() {
+        Cart cart = new Cart();
+        cart.add("apple", 3, 0.5);
+        assertEquals(1.5, cart.total(), 1e-9);
+    }
+}
+"""
+
+JUNIT5 = """
+import org.junit.jupiter.api.Test;
+import static org.junit.jupiter.api.Assertions.*;
+
+class CartTest {
+    @Test
+    void negativeQuantity() {
+        assertThrows(IllegalArgumentException.class, () -> {
+            new Cart().add("apple", -1, 0.5);
+        });
+    }
+
+    @Test
+    void total() {
+        Cart cart = new Cart();
+        cart.add("apple", 3, 0.5);
+        assertEquals(1.5, cart.total(), 1e-9);
+    }
+}
+"""
+
+
+def test_junit4_expected_exception_is_a_check():
+    [case] = [t for t in extract(JUNIT4, PATH).tests if t.name == "testNegativeQuantity"]
+    assert [a.text for a in case.assertions] == ["@Test(expected = IllegalArgumentException.class)"]
+    assert classify(case.assertions[0].text)["exception"] == "IllegalArgumentException"
+    broader = JUNIT4.replace("expected = IllegalArgumentException", "expected = Exception")
+    assert rules(broader, JUNIT4) == ["AW004"]
+    assert rules(JUNIT4.replace("(expected = IllegalArgumentException.class)", ""), JUNIT4) == [
+        "AW002"
+    ]
+
+
+def test_junit4_to_5_rename_dropping_the_test_prefix_is_quiet():
+    assert rules(JUNIT5, JUNIT4) == []
+
+
+def test_a_test_renamed_in_place_and_gutted_still_blocks():
+    gutted = JUNIT5.replace("assertEquals(1.5, cart.total(), 1e-9);", "")
+    assert rules(gutted, JUNIT4) == ["AW002"]
+
+
+def test_removing_a_test_that_never_ran_is_quiet():
+    disabled = swap(
+        "    @Test\n    void emptyCheckoutThrows",
+        "    @Test @Disabled\n    void emptyCheckoutThrows",
+    )
+    removed = swap("\n    @Test\n    void emptyCheckoutThrows() {\n" + THROWS + "    }\n", "\n")
+    assert rules(removed, disabled) == []
+    on_windows = disabled.replace("@Disabled", "@DisabledOnOs(OS.WINDOWS)")
+    assert rules(removed, on_windows) == ["AW001"]  # it ran everywhere else
+
+
+@pytest.mark.parametrize(
+    ("text", "expected"),
+    [
+        ('assertEquals("shop.Cart", cart.getClass().getName());', ("cart", "Cart")),
+        ('assertEquals("Cart", cart.getClass().getSimpleName());', ("cart", "Cart")),
+        ('assertEquals("shop.Outer$Cart", cart.getClass().getName());', ("cart", "Cart")),
+        ("assertEquals(Cart.class, cart.getClass());", ("cart", "Cart")),
+        ("assertInstanceOf(shop.Cart.class, cart);", ("cart", "Cart")),
+        ("assertThat(cart).isInstanceOf(Cart.class);", ("cart", "Cart")),
+        ('assertThat(cart.getClass().getName()).isEqualTo("shop.Cart");', ("cart", "Cart")),
+        ("assertThat(cart, instanceOf(Cart.class));", ("cart", "Cart")),
+        ('assertEquals("Cart", cart.getName());', None),
+        ("assertNotNull(cart);", None),
+    ],
+)
+def test_class_check(text, expected):
+    assert class_check(text) == expected
+
+
+CLASS_NAME = """
+import static org.junit.jupiter.api.Assertions.*;
+import org.junit.jupiter.api.Test;
+
+class CartTest {
+    @Test
+    void defaultCart() {
+        Object cart = Carts.create();
+        assertEquals("shop.Cart", cart.getClass().getName());
+    }
+}
+"""
+
+
+def test_class_name_check_made_as_instance_of_the_same_class_is_quiet():
+    same = 'assertEquals("shop.Cart", cart.getClass().getName());'
+    assert rules(CLASS_NAME.replace(same, "assertInstanceOf(Cart.class, cart);"), CLASS_NAME) == []
+    other = CLASS_NAME.replace(same, "assertInstanceOf(Basket.class, cart);")
+    assert rules(other, CLASS_NAME) == ["AW011"]
+    assert rules(CLASS_NAME.replace(same, "assertNotNull(cart);"), CLASS_NAME) == ["AW011"]
+
+
+HELPER_BASE = """
+import static org.junit.jupiter.api.Assertions.*;
+import org.junit.jupiter.api.Test;
+
+class CartTest {
+    @Test
+    void totals() {
+        checkTotal(new Cart(), 0.0);
+        checkTotal(Carts.of("apple"), 0.5);
+    }
+
+    private static void checkTotal(Cart cart, double total) {
+        assertEquals(total, cart.total(), 1e-9);
+        assertTrue(cart.count() >= 0);
+    }
+}
+"""
+
+
+def test_helper_moved_to_another_file_is_quiet():
+    # checkTotal now comes from a base class or a static import: its checks can't be seen
+    moved = HELPER_BASE.replace(
+        HELPER_BASE[HELPER_BASE.index("    private static void") : HELPER_BASE.rindex("}")], ""
+    )
+    assert "checkTotal(new Cart()" in moved and "private static" not in moved
+    assert rules(moved, HELPER_BASE) == []
+
+
+def test_helper_gutted_in_place_still_blocks():
+    gutted = HELPER_BASE.replace("        assertEquals(total, cart.total(), 1e-9);\n", "")
+    assert rules(gutted, HELPER_BASE) == ["AW002"]
+
+
+def test_helper_turned_into_a_parametrized_test_is_quiet():
+    after = """
+import static org.junit.jupiter.api.Assertions.*;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.CsvSource;
+
+class CartTest {
+    @Test
+    void totals() {
+    }
+
+    @ParameterizedTest
+    @CsvSource({"'', 0.0", "apple, 0.5"})
+    void checkTotal(String items, double total) {
+        Cart cart = Carts.of(items);
+        assertEquals(total, cart.total(), 1e-9);
+        assertTrue(cart.count() >= 0);
+    }
+}
+"""
+    assert "AW002" not in rules(after, HELPER_BASE)

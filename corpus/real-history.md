@@ -239,3 +239,46 @@ was already disabled (27), `assertInstanceOf` read as a presence check (29), Moc
 tests (18). **Not fixable without understanding the code:** tests moved to another file and
 rewritten (13, 15, 24, 25), a stricter check in another form (19), a rename with new cases
 (21), and an input and its expected output extended together (3).
+
+### Java false-positive fixes
+
+**Fixed.** Checks in helper methods of the test class (or an enclosing class) are credited to
+the tests that call them, as in Python, with overloads told apart by argument count and by
+argument types that are plain to see (4, 5, 17; `refactor-j13`, `cheat-j23`). A helper's checks
+stop counting against a test when the helper leaves the file (a base class, a utils class) or
+becomes a test of its own; a helper gutted in place still blocks (`refactor-j20`, `refactor-j21`,
+`cheat-j30`). `assertTrue(a.equals(a))` is a self-comparison like `assertEquals(a, a)` (14, 30;
+`refactor-j14`, `cheat-j24`). `testFoo` and `foo` in the same class are the same test, and
+JUnit 4's `@Test(expected = X.class)` is an expected-exception check, so broadening it is caught
+(6; `refactor-j15`, `cheat-j25`). Removing a test that was always skipped loses nothing, in both
+languages (27; `refactor-j16`, `cheat-j26`). A class-name check made instead as
+`assertInstanceOf` on the same class (29; `refactor-j17`, `cheat-j27`). Mockito's
+`mocked.verify(() -> ...)` on a `MockedStatic` (20; `refactor-j18`, `cheat-j28`). AW009 counts
+`continue-on-error` only on the step or job that runs tests (18; `refactor-j19`, `cheat-j29`).
+Calls named `verifyXxx(...)` count as checks, like `assertXxx(...)` (jackson's `verifyException`).
+
+**Replay after the fixes:** Java 62 -> 53 blocking; Python unchanged at 133. Of the labelled
+sample, 16 still block: 9 false positives (1, 2, 3, 13, 15, 19, 21, 24, 25), 5 intended and the
+2 weakenings. Cleared: the 10 sampled false positives fixed above, #8 (intended: a
+`@JacksonTestFailureExpected` test fixed, its checks moved into a helper) and, outside the
+sample, `9d15c00daf` (a `@Disabled` network test class removed), `4fb17b7e97`, `ff20a92732`,
+`797d509fe0`, `b2c1e70ede` (helpers) and `78383995e7` (now AW005 only). Newly blocked, labelled:
+
+| Project | Commit | Rule | Label | What happened |
+|---|---|---|---|---|
+| jackson-core | `bbfe0d2073` | AW002 | intended | One of two calls to a checking helper removed: one input no longer tested |
+| jackson-core | `42f94c4435` | AW002 | intended | A fixed case dropped from the expected-to-fail tests (`@JacksonTestFailureExpected`) |
+| jackson-core | `7d81ac82d6` | AW002, AW005 | intended | `@Disabled` tests enabled again with new expected messages |
+| jackson-core | `034171bd24` | AW002 | intended | `getNumberType()` now returns null for non-numbers; its checks change with the code |
+| jackson-core | `c4f79cef41` | AW002 | false positive | Two `verifyException` message checks merged into one that accepts either of two messages |
+
+**Rate.** 9 of the 16 sampled commits that still block are false positives; they stand for the
+26 unsampled commits of the first run that still block (about 15 wrong). The 6 commits that
+newly blocked in the last run and still block are right, and 1 of the 5 above is wrong. That is
+about 25 commits blocked wrongly, **about 2.8% of the 900** (roughly 2.4-3.1%), down from 4.3%,
+and about 3.1% blocked rightly. Python stays at about 2.6%.
+
+**Still open:** tests moved to another file and rewritten (13, 15, 24, 25), a stricter check in
+another form (19), a rename with new cases (21), an input and its expected output extended
+together (3), a test made parametrized with more values (2), and JUnit 3 tests through an
+inherited `TestCase` (1), which needs another file to see.

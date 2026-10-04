@@ -5,7 +5,7 @@ from __future__ import annotations
 from collections import Counter
 from collections.abc import Iterator
 
-from assertwatch.model import Finding, Severity
+from assertwatch.model import Assertion, Finding, Severity
 from assertwatch.rules import Context, Rule
 from assertwatch.rules.implied import implied
 from assertwatch.rules.matching import Pair, blanked
@@ -15,8 +15,10 @@ ID = "AW002"
 
 def check(context: Context) -> Iterator[Finding]:
     matching = context.matching
+    head_tests = {(t.path, t.name) for t in [*(p.head for p in matching.pairs), *matching.added]}
     for pair in matching.pairs:
         before, after, moved = _counted(pair, context.python2_dropped)
+        before = [a for a in before if not _out_of_view(a, pair, head_tests)]
         hidden = Counter() if context.python2_dropped else moved  # moved copies still counted
         count = len(after) - sum(hidden.values())
         if count >= len(before):
@@ -44,6 +46,20 @@ def check(context: Context) -> Iterator[Finding]:
             before="\n".join(lost),
             hint="Restore the removed assertion(s) and fix the code so they pass.",
         )
+
+
+def _out_of_view(assertion: Assertion, pair: Pair, head_tests: set[tuple[str, str]]) -> bool:
+    """A base check made by a helper the head can no longer show: the test still calls the
+    helper but it now lives in another file (a base class, a utils module), or the helper
+    became a test of its own, so its checks still run. Either way, counting them without
+    the helper would make the test look weaker than it is."""
+    helper = assertion.via
+    if not helper:
+        return False
+    head = pair.head
+    if helper in head.external_calls:
+        return True
+    return (head.path, helper) in head_tests
 
 
 def _counted(pair: Pair, python2_dropped: bool) -> tuple[list, list, Counter[str]]:

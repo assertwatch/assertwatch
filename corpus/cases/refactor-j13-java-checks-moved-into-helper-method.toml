@@ -1,0 +1,122 @@
+label = 'refactor'
+title = 'Checks repeated in two tests move into a helper method of the test class'
+source = 'jackson-core 797d509fe0 (checks moved into a private helper)'
+
+[before]
+"src/main/java/shop/Cart.java" = '''package shop;
+
+import java.util.ArrayList;
+import java.util.List;
+
+public class Cart {
+    private final List<double[]> items = new ArrayList<>();
+
+    public void add(String name, int qty, double price) {
+        if (qty <= 0) throw new IllegalArgumentException("qty must be positive");
+        items.add(new double[] {qty, price});
+    }
+
+    public int count() {
+        return items.stream().mapToInt(i -> (int) i[0]).sum();
+    }
+
+    public double total() {
+        return items.stream().mapToDouble(i -> i[0] * i[1]).sum();
+    }
+
+    public double checkout() {
+        if (items.isEmpty()) throw new IllegalStateException("cart is empty");
+        return total();
+    }
+
+    public static double withTax(double amount, double rate) {
+        return Math.round(amount * (1 + rate) * 100) / 100.0;
+    }
+}
+'''
+"src/test/java/shop/CartTest.java" = '''package shop;
+
+import static org.junit.jupiter.api.Assertions.*;
+
+import org.junit.jupiter.api.Test;
+
+class CartTest {
+    @Test
+    void totalSumsItems() {
+        Cart cart = new Cart();
+        cart.add("apple", 3, 0.5);
+        cart.add("pear", 2, 1.25);
+        assertEquals(4.0, cart.total(), 1e-9);
+        assertEquals(5, cart.count());
+    }
+
+    @Test
+    void oneItem() {
+        Cart cart = new Cart();
+        cart.add("apple", 2, 0.5);
+        assertEquals(1.0, cart.total(), 1e-9);
+        assertEquals(2, cart.count());
+    }
+}
+'''
+
+[after]
+"src/main/java/shop/Cart.java" = '''package shop;
+
+import java.util.ArrayList;
+import java.util.List;
+
+public class Cart {
+    private final List<double[]> items = new ArrayList<>();
+
+    public void add(String name, int qty, double price) {
+        if (qty <= 0) throw new IllegalArgumentException("qty must be positive");
+        items.add(new double[] {qty, price});
+    }
+
+    public int count() {
+        return items.stream().mapToInt(i -> (int) i[0]).sum();
+    }
+
+    public double total() {
+        return items.stream().mapToDouble(i -> i[0] * i[1]).sum();
+    }
+
+    public double checkout() {
+        if (items.isEmpty()) throw new IllegalStateException("cart is empty");
+        return total();
+    }
+
+    public static double withTax(double amount, double rate) {
+        return Math.round(amount * (1 + rate) * 100) / 100.0;
+    }
+}
+'''
+"src/test/java/shop/CartTest.java" = '''package shop;
+
+import static org.junit.jupiter.api.Assertions.*;
+
+import org.junit.jupiter.api.Test;
+
+class CartTest {
+    @Test
+    void totalSumsItems() {
+        Cart cart = new Cart();
+        cart.add("apple", 3, 0.5);
+        cart.add("pear", 2, 1.25);
+        verifyCart(cart, 4.0, 5);
+    }
+
+    @Test
+    void oneItem() {
+        Cart cart = new Cart();
+        cart.add("apple", 2, 0.5);
+        verifyCart(cart, 1.0, 2);
+    }
+
+    private static void verifyCart(Cart cart, double total, int count) {
+        assertEquals(total, cart.total(), 1e-9);
+        assertEquals(count, cart.count());
+    }
+}
+'''

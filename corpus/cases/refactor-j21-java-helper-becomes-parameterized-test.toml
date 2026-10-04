@@ -1,0 +1,116 @@
+label = 'refactor'
+title = 'A helper called with three values becomes a @ParameterizedTest over them'
+source = 'commons-lang 7cd272ed86 (testCreateDoubleFailure made a parameterized test)'
+
+[before]
+"src/main/java/shop/Cart.java" = '''package shop;
+
+import java.util.ArrayList;
+import java.util.List;
+
+public class Cart {
+    private final List<double[]> items = new ArrayList<>();
+
+    public void add(String name, int qty, double price) {
+        if (qty <= 0) throw new IllegalArgumentException("qty must be positive");
+        items.add(new double[] {qty, price});
+    }
+
+    public int count() {
+        return items.stream().mapToInt(i -> (int) i[0]).sum();
+    }
+
+    public double total() {
+        return items.stream().mapToDouble(i -> i[0] * i[1]).sum();
+    }
+
+    public double checkout() {
+        if (items.isEmpty()) throw new IllegalStateException("cart is empty");
+        return total();
+    }
+
+    public static double withTax(double amount, double rate) {
+        return Math.round(amount * (1 + rate) * 100) / 100.0;
+    }
+}
+'''
+"src/test/java/shop/CartTest.java" = '''package shop;
+
+import static org.junit.jupiter.api.Assertions.*;
+
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.ValueSource;
+
+class CartTest {
+    @Test
+    void negativeQuantityIsRejected() {
+        Cart cart = new Cart();
+        cart.add("apple", 1, 0.5);
+        assertEquals(1, cart.count());
+        rejects(-1);
+        rejects(0);
+        rejects(Integer.MIN_VALUE);
+    }
+
+    void rejects(int qty) {
+        assertThrows(IllegalArgumentException.class, () -> new Cart().add("apple", qty, 0.5));
+    }
+}
+'''
+
+[after]
+"src/main/java/shop/Cart.java" = '''package shop;
+
+import java.util.ArrayList;
+import java.util.List;
+
+public class Cart {
+    private final List<double[]> items = new ArrayList<>();
+
+    public void add(String name, int qty, double price) {
+        if (qty <= 0) throw new IllegalArgumentException("qty must be positive");
+        items.add(new double[] {qty, price});
+    }
+
+    public int count() {
+        return items.stream().mapToInt(i -> (int) i[0]).sum();
+    }
+
+    public double total() {
+        return items.stream().mapToDouble(i -> i[0] * i[1]).sum();
+    }
+
+    public double checkout() {
+        if (items.isEmpty()) throw new IllegalStateException("cart is empty");
+        return total();
+    }
+
+    public static double withTax(double amount, double rate) {
+        return Math.round(amount * (1 + rate) * 100) / 100.0;
+    }
+}
+'''
+"src/test/java/shop/CartTest.java" = '''package shop;
+
+import static org.junit.jupiter.api.Assertions.*;
+
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.ValueSource;
+
+class CartTest {
+    @Test
+    void negativeQuantityIsRejected() {
+        Cart cart = new Cart();
+        cart.add("apple", 1, 0.5);
+        assertEquals(1, cart.count());
+    }
+
+    @ParameterizedTest
+    @ValueSource(ints = {-1, 0, Integer.MIN_VALUE})
+    void rejects(int qty) {
+        assertThrows(IllegalArgumentException.class, () -> new Cart().add("apple", qty, 0.5));
+    }
+}
+'''

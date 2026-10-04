@@ -31,6 +31,8 @@ class Assertion:
     py2_only is set when it sits in a branch that only runs on Python 2 (`if PY2:`, the
     `else` of `if sys.version_info >= (3,):`), which is dead code today.
     lang is the source language, "python" or "java"; rules read text in that language.
+    via is the helper function the test called to make this check (`check_cart`), "" when the
+    test makes it itself.
     In Java, "call" is a statement starting with assertEquals, assertThat(...).isEqualTo(...),
     verify(...) or fail, and "raises" is assertThrows or assertThatThrownBy.
     """
@@ -41,6 +43,7 @@ class Assertion:
     line: int
     py2_only: bool = False
     lang: str = "python"
+    via: str = ""
 
 
 @dataclass(frozen=True)
@@ -81,6 +84,8 @@ class TestCase:
     skip_calls: list[str] = field(default_factory=list)  # "pytest.skip", "self.skipTest", ...
     try_blocks: list[TryBlock] = field(default_factory=list)
     call_count: int = 0  # function calls in the body, excluding assertions
+    # names (last part) of the functions it calls that aren't defined in the file
+    external_calls: frozenset[str] = frozenset()
     is_empty: bool = False  # body is only a docstring / pass / ...
     # every statement is a no-op or binds names to a value built from literals only, so the
     # body can't fail or check anything (`line = "-" * 20`); implied by is_empty

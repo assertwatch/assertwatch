@@ -172,6 +172,7 @@ def _lost_exact_value(
     if len(pair.head.assertions) < len(pair.base.assertions):
         return  # AW002 reports the drop
     exact = [a for a in lost if (c := classify(a)) and c.kind == "equal" and c.literal]
+    exact = [a for a in exact if not _same_class_check(a, gained)]
     weak = [a for a in gained if (c := classify(a)) and c.kind in _WEAK_KINDS]
     strong_gained = [a for a in gained if (c := classify(a)) and c.kind == "equal"]
     if not exact or not weak or strong_gained:
@@ -184,6 +185,18 @@ def _lost_exact_value(
         "exact-value checks were replaced by checks that only test for a value",
         "\n".join(a.text for a in exact),
         "\n".join(a.text for a in weak),
+    )
+
+
+def _same_class_check(lost: Assertion, gained: list[Assertion]) -> bool:
+    """A check of the subject's class name, made instead as an instance-of check on that
+    class: `assertEquals("a.b.Cart", x.getClass().getName())` -> `assertInstanceOf(Cart.class,
+    x)`. It admits subclasses, but it still checks the type, not just that there is a value."""
+    if lost.lang != "java":
+        return False
+    before = java_checks.class_check(lost.text)
+    return before is not None and any(
+        java_checks.class_check(a.text) == before for a in gained if a.lang == "java"
     )
 
 

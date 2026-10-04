@@ -5,7 +5,7 @@ Checked files, on both sides of the diff:
 - .claude/settings.json and settings.local.json: an AssertWatch hook removed, or
   `disableAllHooks` turned on.
 - .github/workflows/*.yml: an AssertWatch step removed; `continue-on-error: true` or
-  `|| true` added where tests run.
+  `|| true` added where tests run (on the step or job that runs them).
 - pytest config (pytest.ini, pyproject.toml, setup.cfg, tox.ini): addopts gaining
   --deselect, -k, -m "not ...", --lf or --ignore; testpaths losing entries; coverage
   fail_under (also .coveragerc and --cov-fail-under) lowered or removed.
@@ -144,9 +144,7 @@ def _workflow(change: FileChange) -> Iterator[Finding]:
     before, after = change.before or "", change.after or ""
     if _guard_lines(after) < _guard_lines(before):
         yield _finding(change, "The AssertWatch step was removed from the CI workflow")
-    if _TEST_COMMAND.search(after) and len(_CONTINUE.findall(after)) > len(
-        _CONTINUE.findall(before)
-    ):
+    if _test_continues(after) > _test_continues(before):
         yield _finding(
             change,
             "`continue-on-error` was added to a CI workflow that runs tests",
@@ -154,6 +152,47 @@ def _workflow(change: FileChange) -> Iterator[Finding]:
         )
     if _swallowed(after) > _swallowed(before):
         yield _finding(change, "A test command in CI now ignores failures (`|| true`)", "||")
+
+
+def _test_continues(text: str) -> int:
+    """`continue-on-error` settings on a step or job that runs tests. One on a step that only
+    downloads or uploads something can't hide a failing test."""
+    lines = text.splitlines()
+    found = 0
+    for k, line in enumerate(lines):
+        if _CONTINUE.match(line.lstrip(" -")) and _TEST_COMMAND.search(_block(lines, k)):
+            found += 1
+    return found
+
+
+def _block(lines: list[str], k: int) -> str:
+    """The YAML step or job that line k belongs to, without comments."""
+
+    def indent(line: str) -> int:
+        return len(line) - len(line.lstrip())
+
+    def code(line: str) -> bool:
+        return bool(line.strip()) and not line.lstrip().startswith("#")
+
+    start = k
+    if not lines[k].lstrip().startswith("- "):
+        start = next(
+            (
+                j
+                for j in range(k - 1, -1, -1)
+                if code(lines[j]) and indent(lines[j]) < indent(lines[k])
+            ),
+            0,
+        )
+    end = next(
+        (
+            j
+            for j in range(start + 1, len(lines))
+            if code(lines[j]) and indent(lines[j]) <= indent(lines[start])
+        ),
+        len(lines),
+    )
+    return "\n".join(_code_lines("\n".join(lines[start:end])))
 
 
 def _code_lines(text: str) -> list[str]:

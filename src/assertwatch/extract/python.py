@@ -341,6 +341,7 @@ def _test_case(
 
     captures = {"recwarn"} & {a.arg for a in node.args.args}
     py2 = _py2_only_nodes(stmts)
+    calls: set[str] = set()
     for sub in _walk_body(stmts):
         dead = id(sub) in py2
         if isinstance(sub, ast.Assert):
@@ -355,8 +356,10 @@ def _test_case(
                 case.assertions.extend(replace(a, py2_only=dead) for a in inlined)
                 case.call_count += 1
             else:
+                calls.add(dotted(sub.func).rsplit(".", 1)[-1])
                 _classify_call(sub, case, dead)
     case.captures = frozenset(captures)
+    case.external_calls = frozenset(calls)
     return case
 
 
@@ -501,7 +504,8 @@ class Helpers:
         if name not in self._cache:
             self._cache[name] = []  # a recursive helper stops here
             self._cache[name] = self._collect(self.defs[name])
-        return [Assertion(a.kind, a.name, a.text, line) for a in self._cache[name]]
+        via = name.rsplit(".", 1)[-1]
+        return [Assertion(a.kind, a.name, a.text, line, via=via) for a in self._cache[name]]
 
     def _collect(self, node: _Function) -> list[Assertion]:
         found: list[Assertion] = []

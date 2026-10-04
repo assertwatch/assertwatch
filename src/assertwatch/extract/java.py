@@ -187,6 +187,34 @@ def _close(tokens: list[Token], start: int) -> int:
     raise JavaSyntaxError(f"unclosed {tokens[start].text!r} on line {tokens[start].line}")
 
 
+def split_args(tokens: list[Token]) -> list[list[Token]]:
+    args: list[list[Token]] = []
+    current: list[Token] = []
+    depth = 0
+    for tok in tokens:
+        if tok.text in ("(", "[", "{"):
+            depth += 1
+        elif tok.text in (")", "]", "}"):
+            depth -= 1
+        elif (
+            tok.text == "<"
+            and current
+            and current[-1].kind == "id"
+            and current[-1].text[0].isupper()
+        ):
+            depth += 1  # a generic type argument: Map<String, Integer>
+        elif tok.text == ">" and depth > 0 and any(t.text == "<" for t in current):
+            depth -= 1
+        if tok.text == "," and depth == 0:
+            args.append(current)
+            current = []
+        else:
+            current.append(tok)
+    if current:
+        args.append(current)
+    return args
+
+
 # --- structure --------------------------------------------------------------------------
 
 
@@ -217,7 +245,9 @@ def extract(source: str, path: str) -> TestFile:
     try:
         tokens = tokenize(source)
         result = TestFile(path=path, imports=_imports(tokens))
-        result.tests = list(_members(tokens, 0, len(tokens), path, (), frozenset(), False))
+        result.tests = list(
+            _members(tokens, 0, len(tokens), path, (), frozenset(), False, _Helpers(tokens, {}))
+        )
     except (JavaSyntaxError, IndexError) as exc:
         return TestFile(path=path, parse_error=f"SyntaxError: {exc}")
     return result
@@ -243,6 +273,7 @@ def _members(
     classes: tuple[str, ...],
     inherited: frozenset[str],
     junit3: bool,
+    helpers: _Helpers,
 ) -> Iterator[TestCase]:
     """Tests declared between start and end: a file's top level or a class body.
 
@@ -281,7 +312,8 @@ def _members(
             )
             if tok.text == "class" and "abstract" not in modifiers and nested_ok:
                 inner = (*classes, name)
-                yield from _members(tokens, body + 1, close, path, inner, markers, is_junit3)
+                scope = helpers.with_methods(_methods(tokens, body + 1, close))
+                yield from _members(tokens, body + 1, close, path, inner, markers, is_junit3, scope)
             annotations, modifiers, i = [], set(), close + 1
             continue
         if tok.text in (";", "}"):
@@ -297,8 +329,166 @@ def _members(
                 tokens, name_at, params, annotations, modifiers, junit3
             ):
                 where = (path, classes, inherited)
-                yield _test_case(tokens, name_at, params, body, where, annotations)
+                yield _test_case(tokens, name_at, params, body, where, annotations, helpers)
         annotations, modifiers, i = [], set(), member_end
+
+
+@dataclass(frozen=True)
+class _Method:
+    start: int  # body range in the file's tokens
+    end: int
+    params: tuple[Token, ...]
+
+    @property
+    def arity(self) -> int | None:
+        """Parameter count; None for varargs."""
+        if any(t.text == "..." for t in self.params):
+            return None
+        return len(_param_names(list(self.params)))
+
+    def accepts(self, types: tuple[str | None, ...]) -> bool:
+        """Each argument whose type is known could be passed to its parameter."""
+        declared = [_declared_type(p) for p in split_args(list(self.params))]
+        return all(
+            arg is None or param is None or param == "Object" or _same_type(arg, param)
+            for arg, param in zip(types, declared, strict=False)
+        )
+
+
+def _methods(tokens: list[Token], start: int, end: int) -> dict[str, list[_Method]]:
+    """The methods with a body declared directly in a class body, by name (overloads share
+    one)."""
+    found: dict[str, list[_Method]] = {}
+    i = start
+    while i < end:
+        tok = tokens[i]
+        if tok.text == "@" and i + 1 < end and tokens[i + 1].text != "interface":
+            i = _annotation(tokens, i)[1]
+        elif tok.text in _MODIFIERS or tok.text in (";", "}"):
+            i += 1
+        elif tok.text in _TYPE_KEYWORDS and tok.kind == "id" and i + 1 < end:
+            body = next(k for k in range(i, end) if tokens[k].text == "{")
+            if tok.text == "record":
+                header = next(k for k in range(i, end) if tokens[k].text == "(")
+                body = next(k for k in range(_close(tokens, header), end) if tokens[k].text == "{")
+            i = _close(tokens, body) + 1
+        elif tok.text == "{":
+            i = _close(tokens, i) + 1
+        else:
+            i, method = _member(tokens, i, end)
+            if method is not None and method[2] is not None:
+                name_at, params, (body_start, body_end) = method
+                found.setdefault(tokens[name_at].text, []).append(
+                    _Method(body_start, body_end, tuple(params))
+                )
+    return found
+
+
+_PRIMITIVES = frozenset({"int", "long", "short", "byte", "char", "boolean", "double", "float"})
+_BOXED = {
+    "Integer": "int", "Long": "long", "Short": "short", "Byte": "byte", "Character": "char",
+    "Boolean": "boolean", "Double": "double", "Float": "float",
+}  # fmt: skip
+
+
+def _same_type(a: str, b: str) -> bool:
+    return _BOXED.get(a, a) == _BOXED.get(b, b)
+
+
+def _declared_type(param: list[Token]) -> str | None:
+    """The simple type name of a parameter (`final Locale locale` -> "Locale"), None if it
+    isn't a plain one (arrays, varargs)."""
+    tokens = [t for t in param if t.text != "final"]
+    while tokens and tokens[0].text == "@":
+        tokens = tokens[2:]
+    if len(tokens) < 2 or tokens[0].kind != "id" or any(t.text in ("[", "...") for t in tokens):
+        return None
+    return tokens[0].text
+
+
+def _local_types(tokens: list[Token]) -> dict[str, str]:
+    """Variables declared in a parameter list or body with a plain type: name -> type."""
+    found: dict[str, str] = {}
+    for k in range(1, len(tokens) - 1):
+        name, before, after = tokens[k], tokens[k - 1], tokens[k + 1]
+        if not (
+            name.kind == "id" and before.kind == "id" and after.text in ("=", ";", ",", ")", ":")
+        ):
+            continue
+        if before.text in _PRIMITIVES or (
+            before.text[0].isupper() and (k < 2 or tokens[k - 2].text != ".")
+        ):
+            found.setdefault(name.text, before.text)
+    return found
+
+
+def _argument_types(args: list[list[Token]], local: dict[str, str]) -> tuple[str | None, ...]:
+    """The type of each argument where it is plain to see: a literal or a declared variable."""
+    types: list[str | None] = []
+    for arg in args:
+        tok = arg[0] if len(arg) == 1 else None
+        if tok is None:
+            types.append(None)
+        elif tok.kind == "str":
+            types.append("String")
+        elif tok.kind == "char":
+            types.append("char")
+        elif tok.text in ("true", "false"):
+            types.append("boolean")
+        elif tok.kind == "id":
+            types.append(local.get(tok.text))
+        else:
+            types.append(None)
+    return tuple(types)
+
+
+class _Helpers:
+    """Methods of the test's class (and of the classes around it) that a test can call.
+
+    A test that calls one is credited with its assertions, so moving checks into
+    `private void assertCart(Cart cart, double total) { assertEquals(total, cart.total()); }`
+    keeps the count, as in the Python reader. Overloads are told apart by argument count, then
+    by the argument types that are plain to see (literals, declared variables); when that
+    still leaves more than one, the one with the fewest assertions counts.
+    """
+
+    def __init__(self, tokens: list[Token], defs: dict[str, list[_Method]]):
+        self.tokens = tokens
+        self.defs = defs
+        self._cache: dict[tuple[str, tuple[str | None, ...]], list[Assertion]] = {}
+        self._external: dict[tuple[str, tuple[str | None, ...]], frozenset[str]] = {}
+
+    def with_methods(self, methods: dict[str, list[_Method]]) -> _Helpers:
+        return _Helpers(self.tokens, {**self.defs, **methods}) if methods else self
+
+    def call(
+        self, name: str, types: tuple[str | None, ...], line: int
+    ) -> tuple[list[Assertion], frozenset[str]]:
+        """The assertions of the helper called with arguments of these types (None where
+        unknown), placed at the calling line, and the outside functions it calls."""
+        key = (name, types)
+        if key not in self._cache:
+            self._cache[key] = []  # a recursive helper stops here
+            self._external[key] = frozenset()
+            overloads = self.defs[name]
+            fits = [m for m in overloads if m.arity == len(types)] or [
+                m for m in overloads if m.arity is None
+            ]
+            fits = [m for m in fits if m.accepts(types)] or fits
+            found = [self._collect(m) for m in fits or overloads]
+            self._cache[key], self._external[key] = min(found, key=lambda f: len(f[0]))
+        checks = [
+            Assertion(a.kind, a.name, a.text, line, lang="java", via=a.via or name)
+            for a in self._cache[key]
+        ]
+        return checks, self._external[key]
+
+    def _collect(self, method: _Method) -> tuple[list[Assertion], frozenset[str]]:
+        """The checks in a helper's body, and the outside functions it (or a helper it calls)
+        calls."""
+        scratch = TestCase(path="", name="", classes=(), line=0, end_line=0, markers=frozenset())
+        _scan_body(self.tokens[method.start : method.end], scratch, self, list(method.params))
+        return scratch.assertions, scratch.external_calls
 
 
 def _runs_as_test(
@@ -489,6 +679,7 @@ def _test_case(
     body: tuple[int, int],
     where: tuple[str, tuple[str, ...], frozenset[str]],
     annotations: list[_Annotation],
+    helpers: _Helpers,
 ) -> TestCase:
     path, classes, inherited = where
     start, end = body
@@ -509,11 +700,26 @@ def _test_case(
     if "parametrize" in case.markers:
         case.param_names = frozenset(names)
         case.param_cases, case.param_literals, case.param_rows = _parametrized(annotations, names)
-    _scan_body(stmts, case)
+    _scan_body(stmts, case, helpers, params)
+    expected = _expected_exception(annotations)
+    if expected is not None:
+        case.assertions.insert(0, expected)
     return case
 
 
-def _scan_body(stmts: list[Token], case: TestCase) -> None:
+def _expected_exception(annotations: list[_Annotation]) -> Assertion | None:
+    """JUnit 4's `@Test(expected = X.class)`, an expected-exception check like assertThrows."""
+    for a in annotations:
+        if a.name != "Test":
+            continue
+        for arg in split_args(a.args):
+            if len(arg) >= 3 and arg[0].text == "expected" and arg[1].text == "=":
+                text = f"@Test({join(arg)})"
+                return Assertion("raises", "expected", text, arg[0].line, lang="java")
+    return None
+
+
+def _scan_body(stmts: list[Token], case: TestCase, helpers: _Helpers, params: list[Token]) -> None:
     dead = _not_run(stmts)
     i = 0
     while i < len(stmts):
@@ -548,15 +754,32 @@ def _scan_body(stmts: list[Token], case: TestCase) -> None:
             if name in _SKIP_CALLS:
                 case.skip_calls.append(join(stmts[start : at + 1]))
             elif _is_assert_call(name):
-                kind = "raises" if name in _RAISES_CALLS else "call"
-                case.assertions.append(_assertion(kind, name, stmts[start:stop], tok.line))
+                if not (at == start and name in helpers.defs):  # the class's own helper
+                    kind = "raises" if name in _RAISES_CALLS else "call"
+                    case.assertions.append(_assertion(kind, name, stmts[start:stop], tok.line))
                 i = stop
                 continue
         i += 1
+    external: set[str] = set()
+    local = _local_types([*params, Token("op", ",", 0), *stmts])
+    for k in _helper_calls(stmts, dead, helpers):
+        types = _argument_types(split_args(stmts[k + 2 : _close(stmts, k + 1)]), local)
+        checks, calls = helpers.call(stmts[k].text, types, stmts[k].line)
+        case.assertions.extend(checks)
+        external |= calls
+    case.assertions.sort(key=lambda a: a.line)
     if not case.returns_first and case.assertions:
         # `if (...) return;` before the checks ends the test early, like a return first
         last = max(k for k, t in enumerate(stmts) if t.line <= case.assertions[-1].line)
         case.returns_first = any(k < last for k in _own_returns(stmts))
+    case.external_calls = frozenset(external) | frozenset(
+        stmts[k].text
+        for k in range(len(stmts) - 1)
+        if stmts[k].kind == "id"
+        and stmts[k + 1].text == "("
+        and stmts[k].text not in _KEYWORDS
+        and stmts[k].text not in helpers.defs
+    )
     case.call_count = sum(
         1
         for k in range(len(stmts) - 1)
@@ -566,6 +789,25 @@ def _scan_body(stmts: list[Token], case: TestCase) -> None:
         and not _is_assert_call(stmts[k].text)
         and stmts[k].text not in _SKIP_CALLS
     )
+
+
+def _helper_calls(stmts: list[Token], dead: list[bool], helpers: _Helpers) -> Iterator[int]:
+    """Indexes of calls to a helper method of the class: `check(x)` or `this.check(x)`,
+    anywhere in code that runs."""
+    for k, tok in enumerate(stmts):
+        if (
+            not dead[k]
+            and tok.kind == "id"
+            and tok.text in helpers.defs
+            and k + 1 < len(stmts)
+            and stmts[k + 1].text == "("
+        ):
+            prev = stmts[k - 1].text if k else ""
+            if prev == "new" or prev == "::":
+                continue
+            if prev == "." and not (k >= 2 and stmts[k - 2].text == "this"):
+                continue
+            yield k
 
 
 def _not_run(stmts: list[Token]) -> list[bool]:
@@ -673,7 +915,13 @@ def _assertion(kind: str, name: str, tokens: list[Token], line: int) -> Assertio
 
 
 def _is_assert_call(name: str) -> bool:
-    return name.startswith("assert") or name in ("fail", "verify", "verifyNoInteractions")
+    """JUnit/AssertJ/Hamcrest asserts, `fail`, Mockito `verify*`, and project helpers named
+    the same way (`assertValidJson`, `verifyException`)."""
+    return (
+        name.startswith("assert")
+        or name == "fail"
+        or (name.startswith("verify") and (name == "verify" or name[6].isupper()))
+    )
 
 
 def _statement_start(stmts: list[Token], i: int) -> bool:
@@ -704,9 +952,26 @@ def _call_name(stmts: list[Token], i: int) -> tuple[str, int] | None:
         and stmts[j + 2].kind == "id"
     ):
         j += 2
+    elif _static_verify(stmts, j):
+        j += 2
     if stmts[j].kind == "id" and j + 1 < len(stmts) and stmts[j + 1].text == "(":
         return stmts[j].text, j
     return None
+
+
+def _static_verify(stmts: list[Token], j: int) -> bool:
+    """`mocked.verify(() -> Util.call(x))`: a Mockito MockedStatic verification, whose
+    argument is a lambda or method reference (a plain `x.verify(data)` is an ordinary call)."""
+    if not (
+        stmts[j].kind == "id"
+        and j + 3 < len(stmts)
+        and stmts[j + 1].text == "."
+        and stmts[j + 2].text == "verify"
+        and stmts[j + 3].text == "("
+    ):
+        return False
+    args = split_args(stmts[j + 4 : _close(stmts, j + 3)])
+    return bool(args) and any(t.text in ("->", "::") for t in args[0])
 
 
 def _statement_end(stmts: list[Token], i: int) -> int:

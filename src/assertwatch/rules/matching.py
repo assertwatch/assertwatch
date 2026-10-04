@@ -170,6 +170,10 @@ def _match_renames(base: list[TestCase], head: list[TestCase]) -> list[Pair]:
             same_name = _name_key(b.name) == _name_key(h.name)
             threshold = SAME_NAME_THRESHOLD if same_name else RENAME_THRESHOLD
             score = _similarity(b_text, head_texts[j], b_tokens, head_tokens[j], threshold)
+            if same_name and b.classes == h.classes and b.path == h.path:
+                # the same test respelled in place, however much the body changed, ahead of
+                # any match by body alone; the rules on the pair still see what it lost
+                score += 1.0
             if score >= threshold:
                 candidates.append((score, i, j))
     candidates.sort(key=lambda c: (-c[0], c[1], c[2]))
@@ -185,8 +189,10 @@ def _match_renames(base: list[TestCase], head: list[TestCase]) -> list[Pair]:
 
 
 def _name_key(name: str) -> str:
-    """testTzOffsetWeakRef and test_tzoffset_weakref name the same test (unittest -> pytest)."""
-    return name.replace("_", "").lower()
+    """testTzOffsetWeakRef and test_tzoffset_weakref name the same test (unittest -> pytest),
+    and so do testTotal and total (JUnit 4 -> 5, where the prefix is no longer needed)."""
+    key = name.replace("_", "").lower()
+    return key.removeprefix("test") if re.match(r"test[A-Z0-9_]", name) else key
 
 
 _COMPARE_CALLS: dict[str, ast.cmpop] = {

@@ -183,7 +183,7 @@ as removed.
 | Rule | Catches |
 |---|---|
 | AW000 | A waiver added in the same change it would excuse |
-| AW001 | A test or parametrized case removed (renames, moves and splits are matched) |
+| AW001 | A test or parametrized case removed (renames, moves and splits are matched; removing a test that was always skipped is fine) |
 | AW002 | A test that lost assertions |
 | AW003 | A new skip, skipif, xfail, skip call or early return |
 | AW004 | An assertion replaced by a weaker one (`==` to `is not None`, broad exceptions, wider tolerance) |
@@ -196,14 +196,16 @@ as removed.
 (`*Test.java`, `Test*.java`, `*Tests.java`, `*TestCase.java`, `*IT.java`) are read with a
 small built-in tokenizer, so Java needs no extra install. JUnit 5 and 4 tests (`@Test`,
 `@ParameterizedTest`, `@RepeatedTest`, JUnit 3 `TestCase` methods) and JUnit, AssertJ,
-Hamcrest and Mockito `verify` checks get AW001-AW005, AW008 and AW011, like Python. Skips:
+Hamcrest and Mockito `verify` checks (and JUnit 4's `@Test(expected = ...)`) get
+AW001-AW005, AW008 and AW011, like Python. A test that calls a helper method of its class (or
+of an enclosing class) is credited with the helper's checks, as in Python. Skips:
 `@Disabled`, `@Ignore`, `@DisabledIf*`/`@EnabledIf*` and the other conditions, and
 `assumeTrue`-style calls. Parametrized cases are counted for `@ValueSource`, `@CsvSource`
 (including text blocks) and `@NullSource`/`@EmptySource`. Not yet: Maven and Gradle config
 (AW009); most Java corpus cases are written for the purpose, not modeled on real commits.
-On the last 300 test-touching commits of commons-lang, jsoup and jackson-core (900), 62
-block; labelling a sample puts about 4.3% of commits blocked wrongly (Python: about 2.6%),
-mostly checks moved into helpers and tests moved between files
+On the last 300 test-touching commits of commons-lang, jsoup and jackson-core (900), 53
+block; labelling a sample puts about 2.8% of commits blocked wrongly (Python: about 2.6%),
+mostly tests moved between files and rewritten
 ([`corpus/real-history.md`](corpus/real-history.md#java)). Only what JUnit runs counts as a test: a test
 made private, static or non-void, moved into an inner class without `@Nested`, or into a
 top-level class whose name Surefire doesn't select, looks removed. Unicode escapes
@@ -234,9 +236,9 @@ suppress anything; they are reported as AW000 for a human to approve.
 `make eval` replays the labelled corpus in [`corpus/cases/`](corpus/cases): small, complete
 changes, each one a cheat that should be caught or a refactor that shouldn't be blocked. The
 refactors are modeled on real commits from open-source projects that earlier versions
-blocked. Results today: **62 of 68 cheats caught, 1 of 47 refactors blocked** (91% recall,
-2% false positives on refactors; 2 more refactors get a warning). That includes 22 Java
-cheats and 12 Java refactors, all handled.
+blocked. Results today: **70 of 76 cheats caught, 1 of 56 refactors blocked** (92% recall,
+2% false positives on refactors; 2 more refactors get a warning). That includes 30 Java
+cheats and 21 Java refactors, all handled.
 
 - **Missed:** a failing assertion wrapped in `try/except AssertionError: pass`, and the
   function under test patched to return the expected value. Those are AW007 and AW006,

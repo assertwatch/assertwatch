@@ -66,6 +66,40 @@ def test_aw001_failing_test_swapped_for_an_easier_one():
     assert rules(REFUND, easier) == ["AW001"]
 
 
+@pytest.mark.parametrize(
+    ("marker", "expected"),
+    [
+        ("@pytest.mark.skip(reason='flaky')", []),  # it never ran
+        ("@unittest.skip('flaky')", []),
+        ("@pytest.mark.skipif(sys.platform == 'win32', reason='posix')", ["AW001"]),
+        ("@pytest.mark.xfail", ["AW001"]),  # xfail tests run
+    ],
+)
+def test_aw001_removing_a_skipped_test(marker, expected):
+    other = "\ndef test_other():\n    assert other() == 1\n"
+    assert rules(REFUND + "\n" + marker + other, REFUND) == expected
+
+
+def test_aw002_helper_moved_to_another_module_is_quiet():
+    base = """
+    def check_refund(refund):
+        assert refund.amount == 10.05
+        assert refund.currency == "USD"
+
+    def test_refund():
+        check_refund(issue_refund(make_order(total=10.05)))
+    """
+    moved = """
+    from tests.helpers import check_refund
+
+    def test_refund():
+        check_refund(issue_refund(make_order(total=10.05)))
+    """
+    assert rules(base, moved) == []
+    gutted = base.replace('        assert refund.currency == "USD"\n', "")
+    assert rules(base, gutted) == ["AW002"]
+
+
 def test_aw001_collection_disabled():
     disabled = "__test__ = False\n" + REFUND
     assert rules(REFUND, disabled) == ["AW001"]

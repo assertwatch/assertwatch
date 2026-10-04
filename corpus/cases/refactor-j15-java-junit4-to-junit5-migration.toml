@@ -1,0 +1,123 @@
+label = 'refactor'
+title = 'JUnit 4 to 5: test prefixes dropped and @Test(expected = ...) becomes assertThrows'
+source = 'jackson-core 6c7daa05dd (JUnit 4 code migrated to JUnit 5)'
+
+[before]
+"src/main/java/shop/Cart.java" = '''package shop;
+
+import java.util.ArrayList;
+import java.util.List;
+
+public class Cart {
+    private final List<double[]> items = new ArrayList<>();
+
+    public void add(String name, int qty, double price) {
+        if (qty <= 0) throw new IllegalArgumentException("qty must be positive");
+        items.add(new double[] {qty, price});
+    }
+
+    public int count() {
+        return items.stream().mapToInt(i -> (int) i[0]).sum();
+    }
+
+    public double total() {
+        return items.stream().mapToDouble(i -> i[0] * i[1]).sum();
+    }
+
+    public double checkout() {
+        if (items.isEmpty()) throw new IllegalStateException("cart is empty");
+        return total();
+    }
+
+    public static double withTax(double amount, double rate) {
+        return Math.round(amount * (1 + rate) * 100) / 100.0;
+    }
+}
+'''
+"src/test/java/shop/CartTest.java" = '''package shop;
+
+import static org.junit.Assert.*;
+
+import org.junit.Test;
+
+public class CartTest {
+    @Test
+    public void testTotalSumsItems() {
+        Cart cart = new Cart();
+        cart.add("apple", 3, 0.5);
+        cart.add("pear", 2, 1.25);
+        assertEquals(4.0, cart.total(), 1e-9);
+    }
+
+    @Test(expected = IllegalArgumentException.class)
+    public void testNegativeQuantityIsRejected() {
+        new Cart().add("apple", -1, 0.5);
+    }
+
+    @Test(expected = IllegalStateException.class)
+    public void testEmptyCartRaisesOnCheckout() {
+        new Cart().checkout();
+    }
+}
+'''
+
+[after]
+"src/main/java/shop/Cart.java" = '''package shop;
+
+import java.util.ArrayList;
+import java.util.List;
+
+public class Cart {
+    private final List<double[]> items = new ArrayList<>();
+
+    public void add(String name, int qty, double price) {
+        if (qty <= 0) throw new IllegalArgumentException("qty must be positive");
+        items.add(new double[] {qty, price});
+    }
+
+    public int count() {
+        return items.stream().mapToInt(i -> (int) i[0]).sum();
+    }
+
+    public double total() {
+        return items.stream().mapToDouble(i -> i[0] * i[1]).sum();
+    }
+
+    public double checkout() {
+        if (items.isEmpty()) throw new IllegalStateException("cart is empty");
+        return total();
+    }
+
+    public static double withTax(double amount, double rate) {
+        return Math.round(amount * (1 + rate) * 100) / 100.0;
+    }
+}
+'''
+"src/test/java/shop/CartTest.java" = '''package shop;
+
+import static org.junit.jupiter.api.Assertions.*;
+
+import org.junit.jupiter.api.Test;
+
+class CartTest {
+    @Test
+    void totalSumsItems() {
+        Cart cart = new Cart();
+        cart.add("apple", 3, 0.5);
+        cart.add("pear", 2, 1.25);
+        assertEquals(4.0, cart.total(), 1e-9);
+    }
+
+    @Test
+    void negativeQuantityIsRejected() {
+        assertThrows(IllegalArgumentException.class, () -> {
+            new Cart().add("apple", -1, 0.5);
+        });
+    }
+
+    @Test
+    void emptyCartRaisesOnCheckout() {
+        assertThrows(IllegalStateException.class, () -> new Cart().checkout());
+    }
+}
+'''

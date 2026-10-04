@@ -253,6 +253,25 @@ def test_aw009_workflow_unrelated_edits_are_fine():
     assert file_rules(".github/workflows/docs.yml", docs, lenient) == []
 
 
+@pytest.mark.parametrize(
+    ("step", "flagged"),
+    [
+        ("      - run: pytest -q\n        continue-on-error: true\n", True),
+        ("      - continue-on-error: true\n        run: pytest -q\n", True),
+        ("      - name: Fetch base coverage\n        continue-on-error: true\n"
+         "        uses: actions/download-artifact@v4\n", False),
+        ("      - uses: actions/upload-artifact@v4\n        continue-on-error: ${{ true }}\n"
+         "        with:\n          name: report\n", False),
+    ],
+)  # fmt: skip
+def test_aw009_continue_on_error_counts_only_where_tests_run(step, flagged):
+    after = WORKFLOW.replace("      - run: pytest -q\n", step)
+    if "pytest" not in step:
+        after = WORKFLOW + step
+    found = file_rules(".github/workflows/ci.yml", WORKFLOW, after, "AW009")
+    assert bool(found) is flagged
+
+
 PYPROJECT = """\
 [tool.pytest.ini_options]
 addopts = "-ra --strict-markers"

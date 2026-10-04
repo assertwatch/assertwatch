@@ -10,7 +10,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from assertwatch.extract.java import JavaSyntaxError, Token, join, tokenize
+from assertwatch.extract.java import JavaSyntaxError, Token, join, split_args, tokenize
 
 ALWAYS = "always"
 SWAPPED = "swapped"
@@ -80,34 +80,6 @@ def _close(tokens: list[Token], start: int) -> int | None:
     return None
 
 
-def split_args(tokens: list[Token]) -> list[list[Token]]:
-    args: list[list[Token]] = []
-    current: list[Token] = []
-    depth = 0
-    for tok in tokens:
-        if tok.text in ("(", "[", "{"):
-            depth += 1
-        elif tok.text in (")", "]", "}"):
-            depth -= 1
-        elif (
-            tok.text == "<"
-            and current
-            and current[-1].kind == "id"
-            and current[-1].text[0].isupper()
-        ):
-            depth += 1  # a generic type argument: Map<String, Integer>
-        elif tok.text == ">" and depth > 0 and any(t.text == "<" for t in current):
-            depth -= 1
-        if tok.text == "," and depth == 0:
-            args.append(current)
-            current = []
-        else:
-            current.append(tok)
-    if current:
-        args.append(current)
-    return args
-
-
 def literal(arg: list[Token]) -> object | None:
     """The value of a literal argument (`5`, `-1.5`, `"a"`, `'c'`, `true`, `null`), or None.
 
@@ -173,6 +145,8 @@ def _class_name(arg: list[Token]) -> str:
 def classify(text: str) -> dict | None:
     """The check an assertion makes, as Check fields: kind, subject, exception,
     matches_message, tolerance, literal. None if it doesn't fit a known shape."""
+    if text.startswith("@Test("):  # JUnit 4: @Test(expected = X.class)
+        return dict(kind="raises", subject="<raises>", exception=_class_name(tokenize(text)[5:-1]))
     calls = [] if _is_assert_statement(text) else chain(text)
     if not calls:
         return _assert_statement(text)
@@ -369,6 +343,56 @@ def _is_any(arg: list[Token]) -> bool:
     return bool(calls) and calls[0].name in _MOCK_ANY
 
 
+_CLASS_NAME = frozenset({"getName", "getSimpleName", "getCanonicalName", "getTypeName"})
+
+
+def class_check(text: str) -> tuple[str, str] | None:
+    """(subject, class) of a check on the subject's runtime class:
+    `assertEquals("a.b.Cart", cart.getClass().getName())`, `assertEquals(Cart.class,
+    cart.getClass())`, `assertInstanceOf(Cart.class, cart)`, `assertThat(cart)
+    .isInstanceOf(Cart.class)`, `assertThat(cart, instanceOf(Cart.class))`. The class is its
+    simple name. None for anything else."""
+    calls = [] if _is_assert_statement(text) else chain(text)
+    if not calls:
+        return None
+    first, rest = calls[0], [c for c in calls[1:] if c.name not in _ASSERTJ_MESSAGE]
+    if first.name in ("assertEquals", "assertSame"):
+        expected, actual, _ = _junit_values(first.args)
+        return None if actual is None else _class_pair(expected, actual)
+    if first.name == "assertInstanceOf" and len(first.args) >= 2:
+        return _text(first.args[1]), _class_name(first.args[0])
+    if first.name == "assertThat" and len(first.args) == 1 and len(rest) == 1:
+        call = rest[0]
+        if call.name in ("isInstanceOf", "isExactlyInstanceOf") and len(call.args) == 1:
+            return _text(first.args[0]), _class_name(call.args[0])
+        if call.name in ("isEqualTo", "isSameAs") and len(call.args) == 1:
+            return _class_pair(call.args[0], first.args[0])
+    if first.name == "assertThat" and len(first.args) == 2:
+        matcher = chain(_text(first.args[1]))
+        if matcher and matcher[0].name in ("instanceOf", "isA") and len(matcher[0].args) == 1:
+            return _text(first.args[0]), _class_name(matcher[0].args[0])
+    return None
+
+
+def _class_pair(expected: list[Token], actual: list[Token]) -> tuple[str, str] | None:
+    """`"a.b.Cart"` against `x.getClass().getName()`, or `Cart.class` against `x.getClass()`."""
+    texts = [t.text for t in actual]
+    get_class = [".", "getClass", "(", ")"]
+    value = literal(expected)
+    if (
+        isinstance(value, str)
+        and len(texts) > 8
+        and texts[-8:-4] == get_class
+        and texts[-4] == "."
+        and texts[-3] in _CLASS_NAME
+        and texts[-2:] == ["(", ")"]
+    ):
+        return _text(actual[:-8]), value.rsplit(".", 1)[-1].rsplit("$", 1)[-1]
+    if len(texts) > 4 and texts[-4:] == get_class and _text(expected).endswith(".class"):
+        return _text(actual[:-4]), _class_name(expected)
+    return None
+
+
 # --- AW005: expected values -------------------------------------------------------------
 
 
@@ -459,6 +483,8 @@ def tautology(text: str) -> str | None:
     name, args = first.name, first.args
     if name == "assertTrue" and args and _always(_last_value(args, 1), True):
         return ALWAYS
+    if name == "assertTrue" and args and _self_equals(_last_value(args, 1)):
+        return SWAPPED
     if name == "assertFalse" and args and _always(_last_value(args, 1), False):
         return ALWAYS
     if name == "assertThat" and len(args) == 1 and not rest:
@@ -482,6 +508,8 @@ def tautology(text: str) -> str | None:
                 return _pair_tautology(call.args[0], subject)
             if call.name == "isTrue" and literal(subject) is True:
                 return ALWAYS
+            if call.name == "isTrue" and _self_equals(subject):
+                return SWAPPED
             if call.name == "isFalse" and literal(subject) is False:
                 return ALWAYS
             if call.name == "isNotNull" and literal(subject) not in (None, _NULL):
@@ -521,10 +549,34 @@ def _statement_tautology(text: str) -> str | None:
         body = body[: texts.index(":")]
     if _always(body, True):
         return ALWAYS
+    if _self_equals(body):
+        return SWAPPED
     parts = _split_op(body, "==")
     if parts is not None:
         return _pair_tautology(*parts)
     return None
+
+
+def _self_equals(expr: list[Token]) -> bool:
+    """`a.equals(a)` or `Objects.equals(a, a)`: Java's spelling of a self-comparison, which
+    equality tests make on purpose (reflexivity), like `assertEquals(a, a)`."""
+    expr = _unparen(expr)
+    if len(expr) < 4 or expr[-1].text != ")":
+        return False
+    depth = 0
+    for k in range(len(expr) - 1, -1, -1):
+        if expr[k].text == ")":
+            depth += 1
+        elif expr[k].text == "(":
+            depth -= 1
+            if depth == 0:
+                break
+    if k < 2 or expr[k - 1].text != "equals" or expr[k - 2].text != ".":
+        return False
+    receiver, args = expr[: k - 2], split_args(expr[k + 1 : -1])
+    if join(receiver) == "Objects" and len(args) == 2:
+        return join(args[0]) == join(args[1])
+    return len(args) == 1 and bool(receiver) and join(receiver) == join(args[0])
 
 
 def _always(expr: list[Token], value: bool) -> bool:

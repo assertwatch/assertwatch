@@ -25,6 +25,8 @@ def check(context: Context) -> Iterator[Finding]:
     for test in matching.removed:
         if test.cannot_fail:
             continue  # it checked and called nothing, so it could never fail
+        if "skip" in test.markers:
+            continue  # skipped unconditionally (@Disabled, mark.skip): it never ran
         if context.python2_dropped and "py2-only" in test.markers:
             continue  # skipped everywhere but Python 2, which the project no longer supports
         yield Finding(
