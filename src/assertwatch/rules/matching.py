@@ -8,14 +8,16 @@ the tests the earlier stages left unmatched:
 2. Identical body, then body similarity >= RENAME_THRESHOLD (or SAME_NAME_THRESHOLD when
    the test kept its name, up to case and underscores, and only its file or class changed).
    unittest assertions are read in their pytest spelling first. These become renamed pairs.
-3. An exact duplicate: a head test with the same body, markers and parametrize cases, so
-   removing this copy loses nothing. Folded into it.
+3. An exact duplicate: a head test with the same body (imports aside), markers and
+   parametrize cases, so removing this copy loses nothing. Folded into it. After matching,
+   fold_into_copies repeats this over test files outside the diff.
 4. Template match against parametrized tests, with literals and parametrize argnames blanked
    out, for `test_a`/`test_b` -> one parametrized test and the reverse. The base test's
    literal values must still appear in the head test (in its body or parametrize values),
    so a hard case can't be folded into an easier one. Or, when the shape changed too
    (unittest -> pytest), every meaningful literal of the base test appears in a
    parametrized head test's values and both call a common function. These are folded.
+   Nothing is folded into a parametrized test whose cases didn't change.
 5. Every assertion of the base test still exists in some head test, and the head has no
    fewer copies of it than the base had (split, or merged into another test). Folded too.
 
@@ -108,10 +110,15 @@ def match_tests(
     result.added = unmatched_head
 
     shapes = _Shapes()
+    # A parametrized test whose cases didn't change took in no new cases, so no removed
+    # test was folded into it; shared values there are a coincidence. Leaving it out can
+    # only report more, never hide a removal.
+    unchanged = {id(p.head) for p in result.pairs if _same_cases(p.base, p.head)}
+    targets = [t for t in head if id(t) not in unchanged]
     for test in unmatched_base:
         heads = (
             _duplicate_of(test, head)
-            or _parametrized_matches(test, head, shapes)
+            or _parametrized_matches(test, targets, shapes)
             or _split_into(test, head, result)
         )
         if heads:
@@ -119,6 +126,24 @@ def match_tests(
         else:
             result.removed.append(test)
     return result
+
+
+def fold_into_copies(matching: Matching, copies: Iterable[TestFile]) -> None:
+    """Fold removed tests that have an exact duplicate in a file the change didn't touch.
+
+    An earlier change copied the test elsewhere and left this one behind; deleting the
+    leftover loses nothing, because the copy still runs. Same test as stage 3 (identical
+    body, markers and parametrize cases), over tests outside the diff.
+    """
+    others = [t for f in copies if not f.parse_error for t in f.tests]
+    still_removed = []
+    for test in matching.removed:
+        heads = _duplicate_of(test, others)
+        if heads:
+            matching.folded.append(Folded(test, heads))
+        else:
+            still_removed.append(test)
+    matching.removed = still_removed
 
 
 def _mapped_id(test: TestCase, path_map: dict[str, str]) -> str:
@@ -399,14 +424,27 @@ def _duplicate_of(test: TestCase, head: list[TestCase]) -> tuple[TestCase, ...]:
     """
     if test.param_names and test.param_cases is None:
         return ()
+    body = _without_imports(test.body_text)
     for other in head:
         if (
-            other.body_text == test.body_text
+            _without_imports(other.body_text) == body
             and other.markers == test.markers
             and _cases(other) == _cases(test)
         ):
             return (other,)
     return ()
+
+
+def _without_imports(body: str) -> str:
+    """The body without its top-level import statements: `import pytest` inside one copy
+    of a test and at the top of the other's module binds the same name."""
+    try:
+        tree = ast.parse(body)
+    except SyntaxError:
+        return body
+    return "\n".join(
+        ast.unparse(s) for s in tree.body if not isinstance(s, ast.Import | ast.ImportFrom)
+    )
 
 
 def case_siblings(base: TestCase, head: TestCase, added: list[TestCase]) -> list[TestCase]:
@@ -445,6 +483,11 @@ def case_siblings(base: TestCase, head: TestCase, added: list[TestCase]) -> list
         if not values <= kept:
             return []
     return siblings
+
+
+def _same_cases(base: TestCase, head: TestCase) -> bool:
+    """The base listed its parametrize cases, and the head lists the same ones."""
+    return bool(base.param_rows) and _cases(base) == _cases(head)
 
 
 def _cases(test: TestCase) -> list[tuple[tuple[str, ...], tuple[str, ...]]]:

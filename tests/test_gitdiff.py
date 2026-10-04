@@ -7,6 +7,7 @@ from assertwatch.gitdiff import (
     ChangedFile,
     GitError,
     changed_files,
+    files_defining,
     read_text,
     repo_root,
     resolve_base,
@@ -143,3 +144,17 @@ def test_changed_file_side_paths():
     assert ChangedFile("D", "o.py").head_path is None
     renamed = ChangedFile("R", "new.py", "old.py")
     assert (renamed.base_path, renamed.head_path) == ("old.py", "new.py")
+
+
+def test_files_defining(repo):
+    head = resolve_commit(repo, "HEAD")
+    assert files_defining(repo, head, ["test_two", "test_old"]) == [
+        "tests/test_app.py",
+        "tests/test_old.py",
+        "tests/test_rename_me.py",
+    ]
+    assert files_defining(repo, head, ["test_on"]) == []  # whole names only: `test_on(`
+    assert files_defining(repo, head, []) == []
+    write(repo, "tests/test_app.py", "def test_new():\n    pass\n")
+    assert files_defining(repo, None, ["test_new"]) == ["tests/test_app.py"]  # working tree
+    assert files_defining(repo, head, ["test_new"]) == []

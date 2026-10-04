@@ -334,6 +334,60 @@ def test_empty_and_early_return(body, is_empty, returns_first):
     assert (case.is_empty, case.returns_first) == (is_empty, returns_first)
 
 
+@pytest.mark.parametrize(
+    ("body", "cannot_fail"),
+    [
+        ("pass", True),
+        ('line = "-" * 20', True),
+        ("x: int = -1\n    y = (1, [2.5, 'a'], 3 + 4j)", True),
+        ('s = f"{1}"', False),  # f-strings aren't evaluated
+        ("x = 1 / 0", False),  # division can raise
+        ('x = "a" - 1', False),  # raises TypeError
+        ('x = -"a"', False),
+        ('x = "x" * 10_001', False),  # bounded: not worth building
+        ('x = "x" * 9_999 * 9_999', False),
+        ("x = [0] * 10_000", True),
+        ("x = y", False),  # a name may be a fixture or a global
+        ("x = f()", False),
+        ("x = d[0]", False),
+        ("x = a.b", False),
+        ("x.y = 1", False),  # an attribute target can run a setter
+        ("x, y = 1, 2", False),
+        ("x = 1\n    assert x == 1", False),
+        ("x = (1, 2) + [3]", False),  # TypeError: a tuple isn't a list
+        ("x = [y]", False),  # y is unbound inside a list too
+        ("x = ~1.5", False),  # only + and - are evaluated
+        ("x = 'a'\n    y = x + 'b'", True),
+        ("y = x + 'b'\n    x = 'a'", False),
+    ],
+)
+def test_cannot_fail(body, cannot_fail):
+    [case] = collect(f"def test_x():\n    {body}\n").values()
+    assert case.cannot_fail is cannot_fail
+
+
+@pytest.mark.parametrize(
+    ("decorators", "cannot_fail"),
+    [
+        ("@pytest.mark.parametrize('sep', ['C', 'T'])", True),  # dateutil 0853d611
+        ("@pytest.mark.parametrize('sep,n', [('C', 1), ('T', 2)])", True),
+        ("@pytest.mark.parametrize('sep', ['C', 1])", False),  # '...' + 1 raises
+        ("@pytest.mark.parametrize('sep', SEPS)", False),  # cases not listed
+        ("@pytest.mark.parametrize('sep', [pytest.param('C', marks=pytest.mark.xfail)])", True),
+        ("@pytest.mark.parametrize('sep', [make()])", False),
+        (  # stacked: each row binds only its own names
+            "@pytest.mark.parametrize('sep', ['C'])\n@pytest.mark.parametrize('n', [1])",
+            False,
+        ),
+        ("", False),  # sep is a fixture
+    ],
+)
+def test_cannot_fail_with_parametrized_literals(decorators, cannot_fail):
+    source = f"import pytest\n{decorators}\ndef test_x(sep):\n    s = '2012' + sep + '01'\n"
+    [case] = collect(source).values()
+    assert case.cannot_fail is cannot_fail
+
+
 def test_body_text_ignores_docstring_and_formatting():
     a = collect('def test_x():\n    """Doc."""\n    x = f( 1 )\n    assert x==1\n')
     b = collect("def test_x():\n    x = f(1)\n    assert x == 1  # same\n")

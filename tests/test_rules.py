@@ -161,6 +161,32 @@ def test_add_zero():
 """
 
 
+def test_aw001_removing_a_test_that_could_never_fail_is_fine():
+    inert = '\ndef test_separator():\n    line = "-" * 20\n'
+    assert rules(REFUND + inert, REFUND) == []
+    smoke = "\ndef test_checkout_runs():\n    checkout(make_order())\n"
+    assert rules(REFUND + smoke, REFUND) == ["AW001"]  # calls code that can fail
+    raises = "\ndef test_ratio():\n    ratio = 1 / 0\n"
+    assert rules(REFUND + raises, REFUND) == ["AW001"]
+
+
+def test_aw001_not_folded_into_an_unchanged_parametrized_test():
+    param = dedent("""
+    import pytest
+
+    @pytest.mark.parametrize(("text", "expected"), [("10-09-2003", 2003), ("2003", 2003)])
+    def test_year(text, expected):
+        assert parse(text).year == expected
+    """)
+    dropped = "\ndef test_dayfirst():\n    assert parse('10-09-2003', dayfirst=True).year == 2003\n"
+    found = run(param + dropped, param)
+    # Same values, different check: removed, not "fewer cases" in test_year.
+    assert [(f.rule, f.test_id) for f in found] == [("AW001", f"{PATH}::test_dayfirst")]
+    plain = "\ndef test_short_year():\n    assert parse('03').year == 2003\n"
+    grown = param.replace('("2003", 2003)]', '("2003", 2003), ("03", 2003)]')
+    assert rules(param + plain, grown) == []  # an existing parametrized test took it in
+
+
 def test_aw001_merged_into_parametrize():
     merged = """
     import pytest
@@ -288,6 +314,41 @@ def test_aw001_duplicate_test_removed():
     dynamic = param.replace("[1, 2]", "load_a()").replace("[3]", "load_b()")
     kept = dynamic.split('@pytest.mark.parametrize("n", load_b())')[0]
     assert rules(dynamic, kept) == ["AW001"]  # its cases can't be compared, so no duplicate
+
+
+def test_aw001_duplicate_ignores_imports_in_the_body():
+    local = REFUND.replace("    order =", "    from shop import make_order\n    order =")
+    other = local.replace("test_refund_rounding", "test_refund_rounding_again")
+    assert rules({PATH: REFUND, "tests/test_y.py": other}, {"tests/test_y.py": other}) == []
+
+
+def test_aw001_copy_in_a_file_outside_the_diff():
+    copy = extract(dedent(REFUND), "tests/test_other.py")
+    asked: list[list[str]] = []
+
+    def find(names):
+        asked.append(names)
+        return [copy]
+
+    assert rules(REFUND, "", find_copies=find) == []
+    assert asked == [["test_refund_rounding"]]
+    for changed in (
+        REFUND.replace("10.05", "10.0"),  # checks another value
+        "import pytest\n@pytest.mark.skip" + REFUND,  # never runs
+    ):
+        weaker = extract(dedent(changed), "tests/test_other.py")
+        assert rules(REFUND, "", find_copies=lambda names, f=weaker: [f]) == ["AW001"]
+    more = REFUND.replace("    order =", "    reset_prices()\n    order =")
+    longer = extract(dedent(more), "tests/test_other.py")  # contains the body, but isn't it
+    assert rules(REFUND, "", find_copies=lambda names: [longer]) == ["AW001"]
+    less = REFUND.replace('    assert order.status == "refunded"\n', "")
+    shorter = extract(dedent(less), "tests/test_other.py")  # a copy that checks less
+    assert rules(REFUND, "", find_copies=lambda names: [shorter]) == ["AW001"]
+    broken = extract("def test_x(:\n", "tests/test_other.py")
+    assert rules(REFUND, "", find_copies=lambda names: [broken]) == ["AW001"]
+    asked.clear()
+    assert rules(REFUND, REFUND, find_copies=find) == []
+    assert asked == []  # nothing looked removed, so nothing was looked up
 
 
 def test_unittest_to_pytest_conversion_is_a_rename():

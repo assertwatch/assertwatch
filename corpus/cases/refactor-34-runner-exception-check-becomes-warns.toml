@@ -1,0 +1,86 @@
+label = 'refactor'
+title = "A warning raised through a CLI runner's result becomes pytest.warns with a match"
+source = 'click 1557e26522 (check for warning exception with idiomatic context manager)'
+known = "result.exception is an attribute of the runner's result, not a captured warning, so the dropped checks can't be proved to be implied by pytest.warns"
+
+[before]
+"src/shop/__init__.py" = ''''''
+"src/shop/cart.py" = '''class Cart:
+    def __init__(self):
+        self.items = []
+
+    def add(self, name, qty, price):
+        self.items.append((name, qty, price))
+
+    def count(self):
+        return sum(qty for _, qty, _ in self.items)
+
+    def total(self):
+        return sum(qty * price for _, qty, price in self.items)
+
+    def checkout(self):
+        if not self.items:
+            raise ValueError("cart is empty")
+        return self.total()
+
+
+def total_with_tax(amount, rate):
+    return round(amount * (1 + rate), 2)
+'''
+"tests/test_cli.py" = '''
+import click
+import pytest
+
+
+def test_duplicate_option_warns(runner):
+    @click.command()
+    @click.option("--xyz", "xyz")
+    @click.option("--xyz", "other")
+    def cli(xyz, other):
+        click.echo(repr(xyz), nl=False)
+
+    result = runner.invoke(cli, [])
+    assert result.exit_code == 1
+    assert isinstance(result.exception, UserWarning)
+    assert "used more than once" in str(result.exception)
+'''
+
+[after]
+"src/shop/__init__.py" = ''''''
+"src/shop/cart.py" = '''class Cart:
+    def __init__(self):
+        self.items = []
+
+    def add(self, name, qty, price):
+        self.items.append((name, qty, price))
+
+    def count(self):
+        return sum(qty for _, qty, _ in self.items)
+
+    def total(self):
+        return sum(qty * price for _, qty, price in self.items)
+
+    def checkout(self):
+        if not self.items:
+            raise ValueError("cart is empty")
+        return self.total()
+
+
+def total_with_tax(amount, rate):
+    return round(amount * (1 + rate), 2)
+'''
+"tests/test_cli.py" = '''
+import click
+import pytest
+
+
+def test_duplicate_option_warns(runner):
+    @click.command()
+    @click.option("--xyz", "xyz")
+    @click.option("--xyz", "other")
+    def cli(xyz, other):
+        click.echo(repr(xyz), nl=False)
+
+    with pytest.warns(UserWarning, match="used more than once"):
+        runner.invoke(cli, [])
+'''

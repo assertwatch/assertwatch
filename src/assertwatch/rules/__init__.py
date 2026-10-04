@@ -8,7 +8,7 @@ from dataclasses import dataclass, field, replace
 from assertwatch.config import Config
 from assertwatch.gitdiff import DiffLine
 from assertwatch.model import Finding, Severity, TestFile
-from assertwatch.rules.matching import Matching, match_tests
+from assertwatch.rules.matching import Matching, fold_into_copies, match_tests
 
 
 @dataclass(frozen=True)
@@ -85,18 +85,25 @@ def run_rules(
     messages: Iterable[str] = (),
     config: Config | None = None,
     python2_dropped: bool = False,
+    find_copies: Callable[[list[str]], Iterable[TestFile]] | None = None,
 ) -> list[Finding]:
     """Match tests across base and head, run every rule, and return sorted findings.
 
     When one rule supersedes another (an emptied test also lost its assertions), only the
     more specific finding is kept for that test. Then the config applies: severities are
     overridden, "off" rules dropped, and findings under a standing waiver marked as waived.
+
+    find_copies, given the names of tests that look removed, returns test files outside
+    the diff that may hold an identical copy of them.
     """
     base_files, head_files = list(base_files), list(head_files)
     path_map = path_map or {}
     old_paths = {path_map.get(f.path, f.path) for f in base_files}
+    matching = match_tests(base_files, head_files, path_map)
+    if find_copies is not None and matching.removed:
+        fold_into_copies(matching, find_copies(sorted({t.name for t in matching.removed})))
     context = Context(
-        match_tests(base_files, head_files, path_map),
+        matching,
         list(files),
         list(lines),
         list(messages),

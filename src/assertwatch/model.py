@@ -78,6 +78,9 @@ class TestCase:
     try_blocks: list[TryBlock] = field(default_factory=list)
     call_count: int = 0  # function calls in the body, excluding assertions
     is_empty: bool = False  # body is only a docstring / pass / ...
+    # every statement is a no-op or binds names to a value built from literals only, so the
+    # body can't fail or check anything (`line = "-" * 20`); implied by is_empty
+    cannot_fail: bool = False
     returns_first: bool = False  # the first statement is `return`
     body_text: str = ""  # normalized body without docstring, for rename matching
     param_names: frozenset[str] = frozenset()  # argnames from parametrize decorators

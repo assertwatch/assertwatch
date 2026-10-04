@@ -91,3 +91,32 @@ def test_python2_branches_follow_the_base_declaration(repo, base_requires, head_
     write(repo, "tests/test_cart.py", PY3_ONLY)
     head = commit_all(repo, "drop it")
     assert [f.rule for f in check_diff(repo, base, head).findings] == rules
+
+
+def test_removed_test_with_a_copy_in_an_untouched_file(repo):
+    tax = "\n\ndef test_tax():\n    assert tax() == 2\n"
+    write(repo, "tests/test_tax.py", tax)
+    commit_all(repo, "copy test_tax")
+    write(repo, "tests/test_cart.py", TESTS.split("\n\ndef test_tax")[0] + "\n")
+    assert check_diff(repo, "HEAD").findings == []  # working tree
+    head = commit_all(repo, "drop the leftover")
+    assert check_diff(repo, "HEAD~1", head).findings == []
+    (repo / "tests/test_tax.py").unlink()  # the copy is read at head, not the working tree
+    assert check_diff(repo, "HEAD~1", head).findings == []
+    git(repo, "checkout", "--", "tests/test_tax.py")
+    # A copy outside the configured test paths doesn't count.
+    write(repo, "assertwatch.toml", 'test_paths = ["tests/test_cart.py"]\n')
+    commit_all(repo, "config")
+    write(repo, "tests/test_cart.py", TESTS)
+    commit_all(repo, "restore")
+    write(repo, "tests/test_cart.py", TESTS.split("\n\ndef test_tax")[0] + "\n")
+    assert [f.rule for f in check_diff(repo, "HEAD").findings] == ["AW001"]
+
+
+def test_copy_in_a_file_the_change_also_touches_is_not_reused(repo):
+    write(repo, "tests/test_tax.py", "\n\ndef test_tax():\n    assert tax() == 2\n")
+    commit_all(repo, "copy test_tax")
+    write(repo, "tests/test_cart.py", TESTS.split("\n\ndef test_tax")[0] + "\n")
+    write(repo, "tests/test_tax.py", "\n\ndef test_tax():\n    assert tax() >= 0\n")
+    found = check_diff(repo, "HEAD").findings
+    assert ("AW001", "tests/test_cart.py::test_tax") in [(f.rule, f.test_id) for f in found]

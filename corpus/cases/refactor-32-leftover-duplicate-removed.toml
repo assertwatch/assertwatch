@@ -1,7 +1,6 @@
 label = 'refactor'
 title = 'A leftover duplicate removed; an earlier change already copied it to another file'
 source = 'click 1103c5ca (move test to prompt file)'
-known = 'the identical copy is in a file the change does not touch, and only changed files are read'
 
 [before]
 "src/shop/__init__.py" = ''

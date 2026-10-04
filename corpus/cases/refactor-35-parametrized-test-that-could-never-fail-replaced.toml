@@ -1,0 +1,98 @@
+label = 'refactor'
+title = 'A parametrized test that only builds a string from its cases is replaced by one that checks the error'
+source = 'dateutil 0853d611 (add test for invalid separator)'
+
+[before]
+"src/shop/__init__.py" = ''''''
+"src/shop/cart.py" = '''class Cart:
+    def __init__(self):
+        self.items = []
+
+    def add(self, name, qty, price):
+        self.items.append((name, qty, price))
+
+    def count(self):
+        return sum(qty for _, qty, _ in self.items)
+
+    def total(self):
+        return sum(qty * price for _, qty, price in self.items)
+
+    def checkout(self):
+        if not self.items:
+            raise ValueError("cart is empty")
+        return self.total()
+
+
+def total_with_tax(amount, rate):
+    return round(amount * (1 + rate), 2)
+'''
+"tests/test_cart.py" = '''
+import pytest
+
+from shop.cart import Cart, total_with_tax
+
+
+def test_total_sums_items():
+    cart = Cart()
+    cart.add("apple", 3, 0.5)
+    cart.add("pear", 2, 1.25)
+    assert cart.total() == 4.0
+    assert cart.count() == 5
+
+
+def test_tax_rounds_to_cents():
+    assert total_with_tax(10.05, rate=0.2) == 12.06
+
+
+@pytest.mark.parametrize("sep_act,valid_sep", [("C", "T"), ("T", "C")])
+def test_receipt_raises_sep(sep_act, valid_sep):
+    line = "2012-04-25" + sep_act + "01:25:00"
+'''
+
+[after]
+"src/shop/__init__.py" = ''''''
+"src/shop/cart.py" = '''class Cart:
+    def __init__(self):
+        self.items = []
+
+    def add(self, name, qty, price):
+        self.items.append((name, qty, price))
+
+    def count(self):
+        return sum(qty for _, qty, _ in self.items)
+
+    def total(self):
+        return sum(qty * price for _, qty, price in self.items)
+
+    def checkout(self):
+        if not self.items:
+            raise ValueError("cart is empty")
+        return self.total()
+
+
+def total_with_tax(amount, rate):
+    return round(amount * (1 + rate), 2)
+'''
+"tests/test_cart.py" = '''
+import pytest
+
+from shop.cart import Cart, total_with_tax
+
+
+def test_total_sums_items():
+    cart = Cart()
+    cart.add("apple", 3, 0.5)
+    cart.add("pear", 2, 1.25)
+    assert cart.total() == 4.0
+    assert cart.count() == 5
+
+
+def test_tax_rounds_to_cents():
+    assert total_with_tax(10.05, rate=0.2) == 12.06
+
+
+@pytest.mark.parametrize("sep", ["C", "T"])
+def test_empty_checkout_raises(sep):
+    with pytest.raises(ValueError, match="empty"):
+        Cart().checkout()
+'''

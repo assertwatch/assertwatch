@@ -7,11 +7,21 @@ from pathlib import Path
 
 from assertwatch.config import CONFIG_PATH, Config, parse_config, path_matches
 from assertwatch.extract.python import extract
-from assertwatch.gitdiff import changed_files, commit_messages, diff_lines, read_text
+from assertwatch.gitdiff import (
+    ChangedFile,
+    changed_files,
+    commit_messages,
+    diff_lines,
+    files_defining,
+    read_text,
+)
 from assertwatch.model import Finding, TestFile
 from assertwatch.paths import is_guard_path, is_test_path
 from assertwatch.python_support import python2_dropped
 from assertwatch.rules import FileChange, run_rules
+
+# Upper bound on unchanged files read when looking for copies of removed tests.
+_MAX_COPY_FILES = 50
 
 
 @dataclass
@@ -34,7 +44,8 @@ def check_diff(repo: Path, base: str, head: str | None = None) -> CheckResult:
     head_files: list[TestFile] = []
     guard_files: list[FileChange] = []
     path_map: dict[str, str] = {}
-    for change in changed_files(repo, base, head):
+    changes = changed_files(repo, base, head)
+    for change in changes:
         old_path, new_path = change.base_path, change.head_path
         if any(p and is_guard_path(p) for p in (old_path, new_path)):
             guard_files.append(
@@ -66,10 +77,24 @@ def check_diff(repo: Path, base: str, head: str | None = None) -> CheckResult:
         messages=commit_messages(repo, base, head),
         config=config,
         python2_dropped=python2_dropped(lambda path: read_text(repo, base, path)),
+        find_copies=lambda names: _unchanged_copies(repo, head, names, changes, config),
     )
     # A renamed file counts once, under its head path.
     paths = {f.path for f in head_files} | {f.path for f in base_files if f.path not in path_map}
     return CheckResult(findings, errors, len(paths))
+
+
+def _unchanged_copies(
+    repo: Path, head: str | None, names: list[str], changes: list[ChangedFile], config: Config
+) -> list[TestFile]:
+    """Test files the change didn't touch that define a test with one of these names.
+
+    They are the same on both sides, so a copy found there ran before and still runs.
+    """
+    touched = {p for c in changes for p in (c.base_path, c.head_path) if p}
+    paths = [p for p in files_defining(repo, head, names) if p not in touched]
+    loaded = (_load(repo, head, p, config) for p in paths[:_MAX_COPY_FILES])
+    return [f for f in loaded if f is not None]
 
 
 def _load(repo: Path, ref: str | None, path: str | None, config: Config) -> TestFile | None:

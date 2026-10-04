@@ -5,6 +5,8 @@ that wasn't: blocking findings on commits from other people's projects, labelled
 
 **Method.** The last 300 non-merge commits touching `*test*.py` in click, more-itertools,
 attrs, dateutil, markupsafe and itsdangerous (1,318 commits), each checked as `sha^..sha`.
+`make history` replays them (`scripts/real_history.py`; the projects and starting commits
+are pinned in `scripts/real_history.toml`, clones go to the gitignored `.cache/`).
 At commit 29d183d, 145 of them got a blocking finding. 30 were drawn at random
 (`random.seed(20261001)`) and labelled by reading the diff:
 
@@ -116,3 +118,40 @@ parametrized test get a misleading "fewer cases" finding (10). **Not fixable wit
 understanding the code:** tests rewritten with new values or generated inputs (10, 13, 14,
 26), parametrization moved into fixtures (28), version tests removed in the commit that
 drops the version (11), and a warning checked through `result.exception` (15).
+
+## P0 close (rate after the last fixes)
+
+Three fixes from the second sample, then P0 stops here whatever the rate:
+
+- A removed test whose identical copy (same body apart from imports, markers and cases) is in
+  a test file the change doesn't touch is not reported. The copy is found with `git grep` at
+  the head.
+- A removed test that can never fail is not reported: every statement is a no-op or binds a
+  name to a value computed from literals alone, or from parametrize cases listed as literals,
+  evaluated case by case.
+- A plain test is no longer folded into a parametrized test whose cases didn't change.
+  Shared literal values there were a coincidence (dateutil `22715e30d1` was reported as
+  "60 cases, down from 64"; it now lists the removed tests).
+
+**Replay** (`python scripts/real_history.py`, fresh clones of the pinned commits): 135 -> 133
+blocking. Cleared: click `1103c5cac2` (#3), click `39413d9b1d` (#14: its removed test also had
+an identical copy in the untouched `tests/test_options.py`), dateutil `0853d611cd` (#20).
+Newly blocked: dateutil `75ae19924e`, labelled **false positive**. A unittest weakref test
+was rewritten as a pytest function with `weakref.ref`, past recognition. The old code passed
+it only by folding it into three unchanged parametrized tests that share the string
+`'EST5EDT'`, the coincidence the third fix removes.
+
+**Result.** The first sample is unchanged (25 blocking, 9 false positives). Of the second
+sample, 27 still block, 6 of them false positives, and they stand for the 107 commits of
+that population that still block; plus the one new false positive. That is about 34
+commits blocked wrongly, **about 2.6% of the 1,318** (95% interval roughly 1.6-4.1%), and
+about 7.5% blocked rightly. Same estimate as above; it reproduces the earlier 3.2% from the
+earlier labels.
+
+**Left, all needing an understanding of the code rather than another rule:** tests rewritten
+with new values, generated inputs or a new mechanism (#10, #13, #26, `75ae19924e`),
+parametrization moved into conftest fixtures (#28), version tests removed in the commit that
+drops the version (#11), and a warning checked through `result.exception` (#15, corpus
+`refactor-34`, known). These are human commits. With author routing (P3), a human change
+gets a warning by default, so the rate that matters is wrong blocks on agent-authored
+changes, which this sample can't measure.

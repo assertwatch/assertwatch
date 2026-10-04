@@ -1,7 +1,6 @@
 label = 'refactor'
 title = 'A test with no assertions and no calls replaced by one that checks something'
 source = 'dateutil 0853d611 (add test for invalid separator)'
-known = 'a removed test that asserts nothing and calls nothing is still reported as removed'
 
 [before]
 "src/shop/__init__.py" = ''

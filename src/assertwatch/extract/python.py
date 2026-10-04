@@ -332,6 +332,7 @@ def _test_case(
     case.param_names, case.param_cases, case.param_literals, case.param_rows = _parametrize(
         node.decorator_list, consts
     )
+    case.cannot_fail = _cannot_fail(stmts, case)
     for dec in node.decorator_list:
         if isinstance(dec, ast.Call):
             target = _mock_target(dec)
@@ -604,6 +605,80 @@ def _strip_docstring(body: list[ast.stmt]) -> list[ast.stmt]:
         if isinstance(body[0].value.value, str):
             return body[1:]
     return body
+
+
+def _cannot_fail(stmts: list[ast.stmt], case: TestCase) -> bool:
+    """Every statement is a no-op or binds a name to a value built from literals only.
+
+    Parametrize argnames count as literals when every case is listed with literal values;
+    the body is then evaluated once per case.
+    """
+    if not case.param_names:
+        return _binds_only_literals(stmts, {})
+    if case.param_cases != len(case.param_rows):
+        return False  # stacked decorators, or cases that aren't listed
+    for row in case.param_rows:
+        try:
+            env = {n: ast.literal_eval(v) for n, v in zip(row.names, row.values, strict=True)}
+        except (ValueError, SyntaxError, TypeError):
+            return False  # pytest.param(...), a call, a name
+        if not _binds_only_literals(stmts, env):
+            return False
+    return True
+
+
+def _binds_only_literals(stmts: list[ast.stmt], env: dict[str, object]) -> bool:
+    env = dict(env)
+    for stmt in stmts:
+        if _is_noop(stmt):
+            continue
+        if isinstance(stmt, ast.Assign):
+            targets, value = stmt.targets, stmt.value
+        elif isinstance(stmt, ast.AnnAssign) and stmt.value is not None:
+            targets, value = [stmt.target], stmt.value
+        else:
+            return False
+        if not all(isinstance(t, ast.Name) for t in targets):
+            return False
+        try:
+            result = _literal_value(value, env)
+        except Exception:  # unknown node, or the expression itself raises (1 / 0, "a" - 1)
+            return False
+        env.update((t.id, result) for t in targets if isinstance(t, ast.Name))
+    return True
+
+
+_LITERAL_OPS = {ast.Add: operator.add, ast.Sub: operator.sub, ast.Mult: operator.mul}
+# Bounds on literal arithmetic: "-" * 20 is fine; "x" * 10**9 is not worth building.
+_MAX_LITERAL_FACTOR = 10_000
+
+
+def _literal_value(node: ast.expr, env: dict[str, object]) -> object:
+    """Evaluate an expression made only of literals, names in env and + - *; raise on
+    anything else."""
+    if isinstance(node, ast.Constant):
+        return node.value
+    if isinstance(node, ast.Name):
+        return env[node.id]  # KeyError: a fixture, a global, a builtin
+    if isinstance(node, ast.Tuple | ast.List):
+        items = [_literal_value(e, env) for e in node.elts]
+        return tuple(items) if isinstance(node, ast.Tuple) else items
+    if isinstance(node, ast.UnaryOp) and isinstance(node.op, ast.USub | ast.UAdd):
+        value = _literal_value(node.operand, env)
+        if not isinstance(value, int | float | complex):
+            raise TypeError(type(value).__name__)
+        return value
+    if isinstance(node, ast.BinOp) and type(node.op) in _LITERAL_OPS:
+        left, right = _literal_value(node.left, env), _literal_value(node.right, env)
+        if isinstance(node.op, ast.Mult) and any(
+            isinstance(v, int) and abs(v) > _MAX_LITERAL_FACTOR for v in (left, right)
+        ):
+            raise ValueError("too large")
+        value = _LITERAL_OPS[type(node.op)](left, right)
+        if isinstance(value, str | bytes | list | tuple) and len(value) > _MAX_LITERAL_FACTOR:
+            raise ValueError("too large")  # "x" * 9999 * 9999
+        return value
+    raise ValueError(ast.unparse(node))
 
 
 def _is_noop(stmt: ast.stmt) -> bool:

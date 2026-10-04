@@ -281,3 +281,22 @@ def commit_messages(repo: Path, base: str, head: str | None = None) -> list[str]
     """Full messages of the commits in base..head (head None = HEAD)."""
     out = run_git(["log", "--format=%B%x00", f"{base}..{head or 'HEAD'}"], repo)
     return [m.strip() for m in out.decode("utf-8", "replace").split("\0") if m.strip()]
+
+
+def files_defining(repo: Path, ref: str | None, names: list[str]) -> list[str]:
+    """Tracked files at ref (None = the working tree) that contain `def <name>(` for any name."""
+    if not names:
+        return []
+    args = ["grep", "-l", "-z", "-F", "--no-color"]
+    for name in names:
+        args += ["-e", f"def {name}("]
+    if ref is not None:
+        args.append(ref)
+    args.append("--")
+    try:
+        out = run_git(args, repo)
+    except GitError:
+        return []  # git grep exits 1 when nothing matches
+    paths = [p.decode() for p in out.split(b"\0") if p]
+    prefix = f"{ref}:" if ref is not None else ""
+    return sorted(p.removeprefix(prefix) for p in paths)

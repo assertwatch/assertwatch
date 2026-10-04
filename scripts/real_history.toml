@@ -1,0 +1,35 @@
+# The six projects of the real-history replay (corpus/real-history.md), pinned so every run
+# checks the same 1,318 commits: the last `commits` non-merge commits touching *test*.py,
+# walking back from `head`.
+
+commits = 300
+
+[[repo]]
+name = "click"
+url = "https://github.com/pallets/click.git"
+head = "06b2a678741131fd577ce170e23e5ca0aeba0309"
+
+[[repo]]
+name = "more-itertools"
+url = "https://github.com/more-itertools/more-itertools.git"
+head = "1ea82a711c69f590054987b5cb194157f8ce8ac4"
+
+[[repo]]
+name = "attrs"
+url = "https://github.com/python-attrs/attrs.git"
+head = "8f767776326faaed11e6c2974798787f6e19b343"
+
+[[repo]]
+name = "dateutil"
+url = "https://github.com/dateutil/dateutil.git"
+head = "2642afacc33fb839c404b75b230fff58b79793f2"
+
+[[repo]]
+name = "markupsafe"
+url = "https://github.com/pallets/markupsafe.git"
+head = "b2e4d9c7687be25695fffbe93a37622302b24fb1"
+
+[[repo]]
+name = "itsdangerous"
+url = "https://github.com/pallets/itsdangerous.git"
+head = "672971d66a2ef9f85151e53283113f33d642dabd"
