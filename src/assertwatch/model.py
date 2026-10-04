@@ -30,6 +30,9 @@ class Assertion:
     text is the normalized source (ast.unparse), stable across formatting changes.
     py2_only is set when it sits in a branch that only runs on Python 2 (`if PY2:`, the
     `else` of `if sys.version_info >= (3,):`), which is dead code today.
+    lang is the source language, "python" or "java"; rules read text in that language.
+    In Java, "call" is a statement starting with assertEquals, assertThat(...).isEqualTo(...),
+    verify(...) or fail, and "raises" is assertThrows or assertThatThrownBy.
     """
 
     kind: str
@@ -37,6 +40,7 @@ class Assertion:
     text: str
     line: int
     py2_only: bool = False
+    lang: str = "python"
 
 
 @dataclass(frozen=True)

@@ -3,7 +3,7 @@
 > Your agent says the tests pass. AssertWatch checks the tests weren't weakened to make that true.
 
 **Status: pre-alpha.** The Python rules, the CLI, the Claude Code hook and the GitHub Action
-work; Java support is next. Building in public.
+work; Java (JUnit 5) support is in progress. Building in public.
 
 AssertWatch reads a git diff and flags test weakening by AI coding agents: deleted tests, dropped
 or loosened assertions, new skips, rewritten expected values and relaxed test or coverage
@@ -192,6 +192,21 @@ as removed.
 | AW009 | Test config or the guard loosened (`--deselect`, lower `fail_under`, hook removed, ...) |
 | AW011 | An assertion that can never fail (`assert True`, `x == x`) |
 
+**Java (in progress).** Test files named like Maven Surefire's and Failsafe's defaults
+(`*Test.java`, `Test*.java`, `*Tests.java`, `*TestCase.java`, `*IT.java`) are read with a
+small built-in tokenizer, so Java needs no extra install. JUnit 5 and 4 tests (`@Test`,
+`@ParameterizedTest`, `@RepeatedTest`, JUnit 3 `TestCase` methods) and JUnit, AssertJ,
+Hamcrest and Mockito `verify` checks get AW001-AW005, AW008 and AW011, like Python. Skips:
+`@Disabled`, `@Ignore`, `@DisabledIf*`/`@EnabledIf*` and the other conditions, and
+`assumeTrue`-style calls. Parametrized cases are counted for `@ValueSource`, `@CsvSource`
+(including text blocks) and `@NullSource`/`@EmptySource`. Not yet: Maven and Gradle config
+(AW009), and a replay of real Java projects' history; the Java corpus cases are written for
+the purpose, not yet modeled on real commits. Only what JUnit runs counts as a test: a test
+made private, static or non-void, moved into an inner class without `@Nested`, or into a
+top-level class whose name Surefire doesn't select, looks removed. Unicode escapes
+(`\u0022`) are translated first, as javac does, so they can't hide code in a string. A changed test file AssertWatch can't parse blocks the hook rather than being
+skipped, so code the tokenizer can't read can't hide a change.
+
 Configuration lives in `assertwatch.toml` and is always read from the base branch, so a change
 can't relax the rules it is checked against:
 
@@ -214,8 +229,9 @@ suppress anything; they are reported as AW000 for a human to approve.
 `make eval` replays the labelled corpus in [`corpus/cases/`](corpus/cases): small, complete
 changes, each one a cheat that should be caught or a refactor that shouldn't be blocked. The
 refactors are modeled on real commits from open-source projects that earlier versions
-blocked. Results today: **40 of 46 cheats caught, 1 of 35 refactors blocked** (87% recall,
-3% false positives on refactors; 2 more refactors get a warning).
+blocked. Results today: **58 of 64 cheats caught, 1 of 44 refactors blocked** (91% recall,
+2% false positives on refactors; 2 more refactors get a warning). That includes 18 Java
+cheats and 9 Java refactors, all handled.
 
 - **Missed:** a failing assertion wrapped in `try/except AssertionError: pass`, and the
   function under test patched to return the expected value. Those are AW007 and AW006,
