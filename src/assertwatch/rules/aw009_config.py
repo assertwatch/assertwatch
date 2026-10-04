@@ -33,10 +33,11 @@ from assertwatch.extract.python import dotted
 from assertwatch.model import Finding, Severity
 from assertwatch.paths import (
     CONFIG_PATH,
-    GRADLE_FILES,
     MAVEN_FILES,
     PYTEST_FILES,
     SETTINGS,
+    is_ci_script,
+    is_gradle_path,
     is_maven_config,
     is_workflow_path,
 )
@@ -55,9 +56,15 @@ _NARROWING = {
     "--ignore": True,
     "--ignore-glob": True,
 }
-_TEST_COMMAND = re.compile(r"\b(pytest|py\.test|tox|nox|unittest|assertwatch|test)\b", re.I)
+_TEST_COMMAND = re.compile(
+    r"\b(pytest|py\.test|tox|nox|unittest|assertwatch|test|mvnw?|gradlew?)\b", re.I
+)
 _SWALLOW = re.compile(r"\|\|\s*(true|:|exit\s+0)\b")
 _CONTINUE = re.compile(r"^\s*continue-on-error\s*:\s*(true|\$\{\{)", re.I | re.M)
+_NEVER = re.compile(r"""^\s*if\s*:\s*(\$\{\{\s*)?(false|0|''|""|null)(\s*\}\})?\s*$""", re.I)
+# Events that run a workflow on code changes; losing all of them stops its tests on PRs.
+_CODE_EVENTS = frozenset({"push", "pull_request", "pull_request_target", "merge_group"})
+_SCRIPT = re.compile(r"(\.sh|\.bash|Makefile|justfile)$")
 
 
 def check(context: Context) -> Iterator[Finding]:
@@ -75,36 +82,67 @@ def check(context: Context) -> Iterator[Finding]:
         elif name == "conftest.py":
             yield from _conftest(change, context)
         elif name in MAVEN_FILES:
-            gone = partial(_module_gone, change, context)
-            yield from _build(change, build_config.maven(change.before, change.after, gone))
-        elif name in GRADLE_FILES:
+            gone = partial(_folder_gone, change, context, ("pom.xml",))
+            settings = name == "settings.xml"
+            yield from _build(
+                change, build_config.maven(change.before, change.after, gone, settings=settings)
+            )
+        elif is_gradle_path(path):
             before = change.before if change.before is not None else _converted(change, context)
-            yield from _build(change, build_config.gradle(before, change.after))
+            gone = partial(_folder_gone, change, context, ("build.gradle", "build.gradle.kts"))
+            yield from _build(change, build_config.gradle(before, change.after, name, gone))
         elif is_maven_config(path):
             yield from _build(change, build_config.config_flags(change.before, change.after))
+        elif is_ci_script(path):
+            lines = (_code_lines(change.before or ""), _code_lines(change.after or ""))
+            yield from _build(change, build_config.workflow(*lines))
+    yield from _ci_deleted(context)
 
 
-def _module_gone(change: FileChange, context: Context, module: str) -> bool:
-    """The change deletes or moves the pom.xml of a module this pom.xml listed."""
-    pom = posixpath.normpath(posixpath.join(posixpath.dirname(change.path), module, "pom.xml"))
-    return any(other.base_path == pom and other.head_path != pom for other in context.files)
+def _folder_gone(change: FileChange, context: Context, builds: tuple[str, ...], sub: str) -> bool:
+    """A module or subproject dropped from the build is gone, not hidden: the change deletes or
+    moves its build file, and no test file is left in its folder to stop running."""
+    folder = posixpath.normpath(posixpath.join(posixpath.dirname(change.path), sub))
+    files = {posixpath.join(folder, b) for b in builds}
+    moved = any(
+        other.base_path in files and other.head_path != other.base_path for other in context.files
+    )
+    if not moved:
+        return False
+    return context.tests_under is None or not context.tests_under(folder)
 
 
 def _converted(change: FileChange, context: Context) -> str | None:
-    """A new build.gradle.kts replacing a build.gradle deleted beside it (or the other way):
-    git sees two files when the conversion rewrites most lines, but it is one build."""
-    folder = posixpath.dirname(change.path)
+    """A new build.gradle.kts replacing the build.gradle it was converted from (or the other
+    way): seen as two files when the conversion rewrites most lines, but it is one script."""
+    stem = change.path.removesuffix(".kts")
     return next(
         (
             other.before
             for other in context.files
             if other.after is None
             and other.base_path
-            and posixpath.dirname(other.base_path) == folder
-            and PurePosixPath(other.base_path).name in GRADLE_FILES
+            and other.base_path.removesuffix(".kts") == stem
         ),
         None,
     )
+
+
+def _ci_deleted(context: Context) -> Iterator[Finding]:
+    """A CI file that ran tests deleted, with no CI file in the change running tests instead."""
+    ci = [
+        c
+        for c in context.files
+        if is_workflow_path(c.path) or (is_ci_script(c.path) and not _SCRIPT.search(c.path))
+    ]
+    replaced = any(c.after is not None and _runs_tests(c.after) for c in ci)
+    for change in ci:
+        if change.after is None and change.before and _runs_tests(change.before) and not replaced:
+            yield _finding(change, "A CI file that ran tests was deleted")
+
+
+def _runs_tests(text: str) -> bool:
+    return any(_TEST_COMMAND.search(line) for line in _code_lines(text))
 
 
 def _build(change: FileChange, found: Iterator[build_config.Loosening]) -> Iterator[Finding]:
@@ -200,7 +238,43 @@ def _workflow(change: FileChange) -> Iterator[Finding]:
         )
     if _swallowed(after) > _swallowed(before):
         yield _finding(change, "A test command in CI now ignores failures (`|| true`)", "||")
+    if _never_runs(after) > _never_runs(before):
+        what = "A CI step or job that runs tests was turned off (`if: false`)"
+        yield _finding(change, what, "if:")
+    if change.after is not None and _runs_tests(after):
+        old, new = _triggers(before), _triggers(after)
+        if old & _CODE_EVENTS and not new & _CODE_EVENTS:
+            lost = ", ".join(sorted(old & _CODE_EVENTS))
+            yield _finding(
+                change, f"The CI workflow that runs tests no longer runs on {lost}", "on:"
+            )
     yield from _build(change, build_config.workflow(_code_lines(before), _code_lines(after)))
+
+
+def _never_runs(text: str) -> int:
+    """`if:` conditions that are always false, on a step or job that runs tests."""
+    lines = text.splitlines()
+    return sum(
+        1
+        for k, line in enumerate(lines)
+        if _NEVER.match(line.lstrip(" -")) and _TEST_COMMAND.search(_block(lines, k))
+    )
+
+
+def _triggers(text: str) -> set[str]:
+    """Event names under the workflow's top-level `on:` (any of its YAML spellings)."""
+    lines = _code_lines(text)
+    for k, line in enumerate(lines):
+        key = re.match(r"""^["']?(on|true)["']?\s*:(.*)$""", line)
+        if not key:
+            continue
+        block = [key[2]]
+        for rest in lines[k + 1 :]:
+            if rest.strip() and not rest[0].isspace():
+                break
+            block.append(rest)
+        return set(re.findall(r"[a-z_]+", "\n".join(block)))
+    return set()
 
 
 def _test_continues(text: str) -> int:

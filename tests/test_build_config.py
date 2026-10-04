@@ -22,7 +22,12 @@ def file_rules(path, before, after):
         ("app/build.gradle.kts", True),
         (".mvn/maven.config", True),
         ("sub/.mvn/jvm.config", True),
-        ("settings.gradle", False),
+        ("settings.gradle", True),
+        ("buildSrc/src/main/kotlin/java-conventions.gradle.kts", True),
+        (".mvn/settings.xml", True),
+        ("Jenkinsfile", True),
+        ("ci/build.sh", True),
+        ("docs/ci.txt", False),
         ("maven.config", False),
     ],
 )
@@ -385,7 +390,7 @@ def test_pom_switch_through_a_property():
     via = POM.replace(PROPS, PROPS + "    <skip.unit>true</skip.unit>\n").replace(
         SF, SF + "          <skipTests>${skip.unit}</skipTests>\n"
     )
-    assert len(file_rules("pom.xml", POM, via)) == 1
+    assert "`skipTests` (maven-surefire-plugin)" in " ".join(file_rules("pom.xml", POM, via))
 
 
 @pytest.mark.parametrize(
@@ -507,3 +512,200 @@ def test_pom_module_edited_in_place_is_not_gone():
         FileChange("web/pom.xml", "web/pom.xml", web, web.replace("web<", "web2<")),
     ]
     assert len(run_rules([], [], files=files)) == 1
+
+
+# --- adversarial forms (security review of the first AW009 build slice) -----------------
+
+PROFILE = (
+    "<profiles><profile><id>quick</id>{}<properties><skipTests>true</skipTests>"
+    "</properties></profile></profiles>\n  <build>"
+)
+
+
+@pytest.mark.parametrize(
+    "activation",
+    [
+        "<activation><activeByDefault>true</activeByDefault></activation>",
+        "<activation><jdk>[17,)</jdk></activation>",
+        "<activation><property><name>!fast</name></property></activation>",
+    ],
+)
+def test_pom_profile_made_active(activation):
+    manual = POM.replace("  <build>", PROFILE.format(""), 1)
+    active = POM.replace("  <build>", PROFILE.format(activation), 1)
+    assert file_rules("pom.xml", POM, manual) == []  # asked for by name: not a default build
+    assert len(file_rules("pom.xml", manual, active)) == 1
+
+
+@pytest.mark.parametrize(
+    ("change", "flagged"),
+    [
+        ((PROPS, PROPS + "    <skipUnitTests>true</skipUnitTests>\n"), True),
+        ((PROPS, PROPS + "    <skip.it>true</skip.it>\n"), True),
+        ((PROPS, PROPS + "    <maven.javadoc.skip>true</maven.javadoc.skip>\n"), False),
+        ((PROPS, PROPS + "    <gpg.skip>true</gpg.skip>\n"), False),
+        (("  <build>\n", "  <build>\n    <testSourceDirectory>x</testSourceDirectory>\n"), True),
+        ((SF, SF + "          <includeJUnit5Engines>junit-vintage</includeJUnit5Engines>\n"), True),
+    ],
+)
+def test_pom_other_loosenings(change, flagged):
+    assert bool(file_rules("pom.xml", POM, POM.replace(*change))) is flagged
+
+
+def test_maven_settings_profiles_all_count():
+    settings = (
+        "<settings><profiles><profile><id>ci</id><properties>{}</properties></profile>"
+        "</profiles></settings>"
+    )
+    before, after = settings.format(""), settings.format("<skipTests>true</skipTests>")
+    assert len(file_rules(".mvn/settings.xml", before, after)) == 1
+
+
+@pytest.mark.parametrize(
+    "added",
+    [
+        '\ntasks.getByName("test").enabled = false\n',
+        "\ntest.setEnabled(false)\n",
+        "\ntasks.test { ignoreFailures.set(true) }\n",
+        '\ntest { enabled = System.getenv("CI") == null }\n',
+        "\ntest { onlyIf { !isCi } }\n",
+        "\ntest { exclude { it.name.contains('Cart') } }\n",
+        "\ncheck.dependsOn.remove(test)\n",
+        "\ntasks.named('check') { setDependsOn([]) }\n",
+        "\nsourceSets.test.java.srcDirs = []\n",
+        "\ntest { testClassesDirs = files() }\n",
+        "\ntest { useJUnitPlatform { excludeEngines 'junit-jupiter' } }\n",
+    ],
+)
+def test_gradle_other_spellings(added):
+    assert len(file_rules("build.gradle", GROOVY, GROOVY + added)) == 1
+
+
+@pytest.mark.parametrize(
+    "added",
+    [
+        "\ntest { reports.html.enabled = false }\n",
+        "\ntest { onlyIf { true } }\n",
+        "\nsourceSets { integrationTest { java { srcDirs = ['src/it/java'] } } }\n",
+        "\nsourceSets.test.java.srcDirs += 'src/extra/java'\n",
+        "\ncheck.dependsOn integrationTest\n",
+    ],
+)
+def test_gradle_other_spellings_unrelated(added):
+    assert file_rules("build.gradle", GROOVY, GROOVY + added) == []
+
+
+def test_gradle_statements_over_several_lines():
+    split = GROOVY.replace(JUNIT, JUNIT + '    exclude(\n        "**/Cart*"\n    )\n')
+    assert len(file_rules("build.gradle", GROOVY, split)) == 1
+
+
+def test_gradle_any_script_and_existing_test_task():
+    script = "test {\n    exclude '**/Cart*'\n}\n"
+    assert len(file_rules("gradle/filters.gradle", None, script)) == 1
+    assert len(file_rules("buildSrc/src/main/kotlin/conv.gradle.kts", "", script)) == 1
+
+
+def test_gradle_settings_project_dropped():
+    def found(after, *others, tests_left=True):
+        files = [FileChange("settings.gradle", "settings.gradle", SETTINGS, after), *others]
+        found = run_rules([], [], files=files, tests_under=lambda folder: tests_left)
+        return [f.message for f in found]
+
+    dropped = SETTINGS.replace(", 'web'", "")
+    assert found(dropped) == [
+        "Gradle settings no longer include project `web`, so its tests don't run."
+    ]
+    build = FileChange("web/build.gradle", None, "plugins { id 'java' }\n", None)
+    assert found(dropped, build, tests_left=False) == []  # deleted with its tests
+    assert len(found(dropped, build, tests_left=True)) == 1  # build file gone, tests left
+    assert found(SETTINGS.replace("'core', 'web'", "'core',\n        'web'")) == []
+
+
+SETTINGS = "rootProject.name = 'shop'\ninclude 'core', 'web'\n"
+
+
+def test_pom_module_deleted_but_tests_left():
+    dropped = PARENT.replace("    <module>web</module>\n", "")
+    files = [
+        FileChange("pom.xml", "pom.xml", PARENT, dropped),
+        FileChange("web/pom.xml", None, "<project/>", None),
+    ]
+    assert len(run_rules([], [], files=files, tests_under=lambda folder: True)) == 1
+    assert run_rules([], [], files=files, tests_under=lambda folder: False) == []
+
+
+@pytest.mark.parametrize(
+    ("before", "after"),
+    [
+        (WORKFLOW, WORKFLOW.replace("      - run:", "      - if: false\n        run:")),
+        (WORKFLOW, WORKFLOW.replace("    runs-on:", "    if: ${{ false }}\n    runs-on:")),
+        (WORKFLOW, WORKFLOW.replace("on: [push]", "on: [workflow_dispatch]")),
+        (WORKFLOW, WORKFLOW.replace("on: [push]", "on:\n  schedule:\n    - cron: '0 0 * * 0'")),
+        (WORKFLOW, WORKFLOW.replace("-B verify", "-B verify -D$SKIP")),
+        (WORKFLOW, WORKFLOW.replace("-B verify", "-B verify -DskipTests=${{ vars.SKIP }}")),
+    ],
+)  # fmt: skip
+def test_ci_other_loosenings(before, after):
+    assert len(file_rules(".github/workflows/ci.yml", before, after)) == 1
+
+
+def test_ci_quiet_changes():
+    both = WORKFLOW.replace("on: [push]", "on: [push, pull_request]")
+    assert file_rules(".github/workflows/ci.yml", both, WORKFLOW) == []  # still on push
+    cond = WORKFLOW.replace(
+        "      - run:", "      - if: matrix.os == 'ubuntu-latest'\n        run:"
+    )
+    assert file_rules(".github/workflows/ci.yml", WORKFLOW, cond) == []
+    flag = WORKFLOW.replace("-B verify", "-B verify -Drevision=${{ github.sha }}")
+    assert file_rules(".github/workflows/ci.yml", WORKFLOW, flag) == []
+
+
+def test_ci_file_deleted():
+    deleted = FileChange(".github/workflows/ci.yml", None, WORKFLOW, None)
+    assert len(run_rules([], [], files=[deleted])) == 1
+    moved_to = FileChange(None, ".github/workflows/build.yml", None, WORKFLOW)
+    assert run_rules([], [], files=[deleted, moved_to]) == []
+    docs = FileChange(
+        ".github/workflows/docs.yml",
+        None,
+        "jobs:\n  d:\n    steps:\n      - run: mkdocs build\n",
+        None,
+    )
+    assert run_rules([], [], files=[docs]) == []
+
+
+@pytest.mark.parametrize(
+    ("path", "before", "after"),
+    [
+        ("Jenkinsfile", "sh './mvnw -B verify'\n", "sh './mvnw -B verify -DskipTests'\n"),
+        (".gitlab-ci.yml", "t:\n  script: gradle build\n", "t:\n  script: gradle build -x test\n"),
+        ("ci/build.sh", "./mvnw -B verify\n", "./mvnw -B compile\n"),
+        ("Makefile", "test:\n\tmvn -B verify\n", "test:\n\tmvn -B verify -Dmaven.test.skip\n"),
+    ],
+)  # fmt: skip
+def test_other_ci_files(path, before, after):
+    assert len(file_rules(path, before, after)) == 1
+
+
+def test_more_expression_and_quiet_cases():
+    lenient = GROOVY.replace(JUNIT, JUNIT + "    ignoreFailures = project.hasProperty('x')\n")
+    assert len(file_rules("build.gradle", GROOVY, lenient)) == 1
+    rules = "    violationRules {\n"
+    soft = GROOVY.replace(rules, rules + "        failOnViolation = isCi\n")
+    assert len(file_rules("build.gradle", GROOVY, soft)) == 1
+    # A property set only in a profile that must be asked for doesn't apply to a plain build.
+    manual = POM.replace(
+        "  <build>",
+        "<profiles><profile><id>q</id><properties><s>true</s></properties>"
+        "</profile></profiles>\n  <build>",
+        1,
+    )
+    reads = manual.replace(SF, SF + "          <skipTests>${s}</skipTests>\n")
+    assert file_rules("pom.xml", manual, reads) == []
+    # Deleting a shell script, or a docs workflow's triggers changing, hides no test run.
+    script = FileChange("scripts/test.sh", None, "./mvnw -B verify\n", None)
+    assert run_rules([], [], files=[script]) == []
+    docs = "on: [push]\njobs:\n  d:\n    steps:\n      - run: mkdocs build\n"
+    manual_docs = docs.replace("[push]", "[workflow_dispatch]")
+    assert file_rules(".github/workflows/docs.yml", docs, manual_docs) == []

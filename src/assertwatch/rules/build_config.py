@@ -54,6 +54,11 @@ _RUNNERS = ("surefire", "failsafe")
 _DEFAULT_INCLUDES = frozenset(
     {"**/Test*.java", "**/*Test.java", "**/*Tests.java", "**/*TestCase.java"}
 )
+# Custom properties that look like a test skip switch: skipUnitTests, skip.it, ignore.tests.
+_SKIPPY = re.compile(r"(?i)skip|ignore|disable")
+_TESTISH = re.compile(
+    r"(?i)test|unit|integration|surefire|failsafe|jacoco|coverage|(^|[._-])its?($|[._-])|ITs"
+)
 _DOCTYPE = re.compile(r"<!DOCTYPE[^\[>]*(\[.*?\])?\s*>", re.S | re.I)
 
 
@@ -82,6 +87,8 @@ def flags(tokens: list[str]) -> Counter[str]:
                 found[token] += 1
             elif name in ("excludedGroups", "surefire.excludedGroups") and value:
                 found[token] += 1
+            elif "$" in name or (name in _PROPERTIES and "$" in value):
+                found[token] += 1  # set from a variable: may well skip tests
         elif token in ("-x", "--exclude-task") and i + 1 < len(tokens):
             if _GRADLE_TEST_TASK.match(tokens[i + 1].rsplit(":", 1)[-1]):
                 found[f"{token} {tokens[i + 1]}"] += 1
@@ -112,11 +119,10 @@ def _commands(lines: list[str]) -> _Commands:
     for line in joined.splitlines():
         for segment in _SEGMENTS.split(line):
             tokens = _tokens(segment)
+            if _tool(tokens) is None:  # a command inside a string: sh './mvnw verify'
+                tokens = re.findall(r"[^\s'\"]+", segment)
             found = flags(tokens)
-            tool = next(
-                (i for i, t in enumerate(tokens) if t.rsplit("/", 1)[-1] in _MAVEN | _GRADLE),
-                None,
-            )
+            tool = _tool(tokens)
             if tool is None:
                 result.outside += found
                 continue
@@ -125,6 +131,10 @@ def _commands(lines: list[str]) -> _Commands:
             if _runs_tests(tokens[tool].rsplit("/", 1)[-1], tokens[tool + 1 :]) and not found:
                 result.enforcing += 1
     return result
+
+
+def _tool(tokens: list[str]) -> int | None:
+    return next((i for i, t in enumerate(tokens) if t.rsplit("/", 1)[-1] in _MAVEN | _GRADLE), None)
 
 
 def _runs_tests(tool: str, args: list[str]) -> bool:
@@ -176,6 +186,7 @@ class _Pom:
     limits: dict[tuple[str, str, str, str], float] = field(default_factory=dict)
     modules: set[tuple[str, str]] = field(default_factory=set)  # (profile or "", module)
     properties: dict[str, str] = field(default_factory=dict)
+    sources: set[tuple[str, str]] = field(default_factory=set)  # test source/class folders
 
 
 def _local(tag: object) -> str:
@@ -201,7 +212,31 @@ def _ratio(text: str) -> float | None:
         return None
 
 
-def _pom(text: str | None) -> _Pom | None:
+def _active(profile: ET.Element) -> bool:
+    """A profile Maven turns on without being asked: activeByDefault, or a JDK, OS, file or
+    missing-property condition that holds on an ordinary build machine."""
+    activation = _child(profile, "activation")
+    if activation is None:
+        return False
+    if _text(_child(activation, "activeByDefault")).lower() == "true":
+        return True
+    if any(_child(activation, c) is not None for c in ("jdk", "os", "file")):
+        return True
+    prop = _child(activation, "property")
+    return prop is not None and _text(_child(prop, "name")).startswith("!")
+
+
+def _effective(element: ET.Element, settings: bool) -> Iterator[ET.Element]:
+    """Elements Maven applies on a plain build: profiles that must be asked for are skipped
+    (in a settings file every profile counts: activeProfiles turns them on)."""
+    yield element
+    for child in element:
+        if _local(child.tag) == "profile" and not settings and not _active(child):
+            continue
+        yield from _effective(child, settings)
+
+
+def _pom(text: str | None, settings: bool = False) -> _Pom | None:
     if text is None:
         return _Pom()
     text = _DOCTYPE.sub("", text)
@@ -212,9 +247,9 @@ def _pom(text: str | None) -> _Pom | None:
     except ET.ParseError:
         return None
     pom = _Pom()
-    for properties in (e for e in root.iter() if _local(e.tag) == "properties"):
+    for properties in (e for e in _effective(root, settings) if _local(e.tag) == "properties"):
         pom.properties |= {_local(p.tag): _text(p) for p in properties}
-    _walk(root, "", "", pom)
+    _walk(root, "", "", pom, settings)
     profiles = _child(root, "profiles")
     owners = [(root, "")] + [(p, _text(_child(p, "id"))) for p in _children(profiles)]
     for profile, owner in owners:
@@ -222,6 +257,10 @@ def _pom(text: str | None) -> _Pom | None:
             if _local(module.tag) == "module":
                 pom.modules.add((owner, _text(module).rstrip("/")))
     return pom
+
+
+def _skip_switch(name: str) -> bool:
+    return bool(_SKIPPY.search(name) and _TESTISH.search(name))
 
 
 def _resolve(value: str, properties: dict[str, str]) -> str:
@@ -234,8 +273,10 @@ def _resolve(value: str, properties: dict[str, str]) -> str:
     return value
 
 
-def _walk(element: ET.Element, plugin: str, parent: str, pom: _Pom) -> None:
+def _walk(element: ET.Element, plugin: str, parent: str, pom: _Pom, settings: bool) -> None:
     tag = _local(element.tag)
+    if tag == "profile" and not settings and not _active(element):
+        return
     if tag == "plugin":
         plugin = _text(_child(element, "artifactId"))
     owner = "properties" if parent == "properties" else plugin
@@ -243,6 +284,8 @@ def _walk(element: ET.Element, plugin: str, parent: str, pom: _Pom) -> None:
     runner = any(r in plugin for r in _RUNNERS)
     if (parent == "properties" or plugin) and _PROPERTIES.get(tag) == value:
         pom.switches.add((owner, tag))
+    elif parent == "properties" and value == "true" and _skip_switch(tag):
+        pom.switches.add((owner, tag))  # e.g. skipUnitTests, read by a module's plugin config
     elif tag in _PARAMETERS and plugin:
         wanted, plugins = _PARAMETERS[tag]
         if value == wanted and any(p in plugin for p in plugins):
@@ -253,6 +296,13 @@ def _walk(element: ET.Element, plugin: str, parent: str, pom: _Pom) -> None:
         pom.excludes.add((plugin, f"excludesFile {_text(element)}"))
     elif runner and (tag == "include" and parent == "includes" or tag == "test"):
         pom.includes.setdefault(plugin, set()).add(_text(element))
+    elif runner and tag == "excludeJUnit5Engines":
+        pom.excludes |= {(plugin, f"engine {e.strip()}") for e in _text(element).split(",")}
+    elif runner and tag == "includeJUnit5Engines":
+        engines = {e.strip() for e in _text(element).split(",") if e.strip()}
+        pom.groups.setdefault(f"{plugin} engines", set()).update(engines)
+    if tag in ("testSourceDirectory", "testClassesDirectory"):
+        pom.sources.add((tag, _text(element)))
     if tag in ("groups", "excludedGroups") and (runner or parent == "properties"):
         tags = {t.strip() for t in _text(element).split(",") if t.strip()}
         if tag == "groups":
@@ -271,16 +321,20 @@ def _walk(element: ET.Element, plugin: str, parent: str, pom: _Pom) -> None:
                 if number is not None:
                     pom.limits[(scope, counter, kind, bound)] = number
     for child in element:
-        _walk(child, plugin, tag, pom)
+        _walk(child, plugin, tag, pom, settings)
 
 
 def maven(
-    before: str | None, after: str | None, gone: Callable[[str], bool] = lambda module: False
+    before: str | None,
+    after: str | None,
+    gone: Callable[[str], bool] = lambda module: False,
+    *,
+    settings: bool = False,
 ) -> Iterator[Loosening]:
-    """gone(module): the change deletes or moves that module's pom.xml."""
+    """gone(module): the module is deleted or moved with its tests, not just left out."""
     if after is None:
-        return  # the module is gone; its tests' removal is reported on the test files
-    old, new = _pom(before), _pom(after)
+        return  # a deleted root pom breaks the build; a module's is checked through gone()
+    old, new = _pom(before, settings), _pom(after, settings)
     if new is None:
         if old is not None:
             yield ("pom.xml can't be read, so its test settings can't be compared", "")
@@ -303,7 +357,11 @@ def maven(
     for owner in sorted(set(old.groups) | set(new.groups)):
         lost = _narrowed(old.groups.get(owner, set()), new.groups.get(owner, set()))
         if lost:
-            yield (f"pom.xml `groups` now runs fewer tests: {_list(lost)} left out", "groups")
+            label = "engines" if owner.endswith(" engines") else "groups"
+            yield (f"pom.xml `{label}` now runs fewer tests: {_list(lost)} left out",
+                   "groups")  # fmt: skip
+    for tag, folder in sorted(new.sources - old.sources):
+        yield (f"pom.xml now reads tests from another folder: `{tag}` is `{folder}`", tag)
     for _owner, tag in sorted(new.excluded_groups - old.excluded_groups):
         yield (f"pom.xml now excludes the test group `{tag}`", "excludedGroups")
     yield from _limits(old.limits, new.limits)
@@ -356,9 +414,28 @@ def _limits(
 _STRING = re.compile(r"'''.*?'''|\"\"\".*?\"\"\"|'(?:\\.|[^'\\\n])*'|\"(?:\\.|[^\"\\\n])*\"", re.S)
 _COMMENT_OR_STRING = re.compile(_STRING.pattern + r"|//[^\n]*|/\*.*?\*/", re.S)
 _TEST_HEADER = re.compile(r"(?i)test")
-_ASSIGN = re.compile(r"^(?:[\w.]+\.)?(is)?([A-Za-z]\w*)\s*(?:=|\s)\s*(\w+)\s*$")
-_EXCLUDE_LISTS = ("excludeTestsMatching", "excludeTags", "excludeCategories", "excludeGroups")
-_INCLUDE_LISTS = ("includeTestsMatching", "includeTags", "includeCategories", "includeGroups")
+# `x = v`, `x v` (Groovy), after any receiver: `tasks.getByName("test").enabled = false`.
+_ASSIGN = re.compile(r"^(.*?)\b([A-Za-z]\w*)\s*(?:=|\s)\s*([^=].*?)\s*$")
+_SETTER = re.compile(r"\bset([A-Z]\w*)\s*\((.*)\)\s*$")  # setEnabled(false)
+_PROPERTY_SET = re.compile(r"\b(\w+)\s*\.\s*set\s*\((.*)\)\s*$")  # enabled.set(false)
+_EXCLUDE_LISTS = (
+    "excludeTestsMatching",
+    "excludeTags",
+    "excludeCategories",
+    "excludeGroups",
+    "excludeEngines",
+)
+_INCLUDE_LISTS = (
+    "includeTestsMatching",
+    "includeTags",
+    "includeCategories",
+    "includeGroups",
+    "includeEngines",
+)
+_SOURCES = re.compile(r"\b(srcDirs|setSrcDirs|testClassesDirs|setTestClassesDirs|classpath)\b")
+_DEPENDS_REMOVED = re.compile(
+    r"dependsOn\b.*\b(remove|removeAll|clear)\b|setDependsOn|dependsOn\s*="
+)
 _NUMBER = re.compile(r"\d+(?:\.\d+)?")
 
 
@@ -374,6 +451,8 @@ class _Gradle:
     includes: dict[tuple[str, str], set[str]] = field(default_factory=dict)  # (task, kind)
     tasks: set[str] = field(default_factory=set)  # test tasks configured
     minimums: list[float] = field(default_factory=list)
+    sources: set[tuple[str, str]] = field(default_factory=set)  # (task, assignment)
+    projects: set[str] = field(default_factory=set)  # settings.gradle includes
 
 
 def _task(headers: tuple[str, ...]) -> str:
@@ -394,6 +473,7 @@ def _statements(text: str) -> Iterator[tuple[str, tuple[str, ...]]]:
     """Each statement with the headers of the blocks around it, outermost first."""
     code = _COMMENT_OR_STRING.sub(lambda m: m[0] if m[0][0] in "'\"" else " ", text)
     stack: list[str] = []
+    depth = 0  # open ( and [ in the current statement
     current: list[str] = []
     i = 0
     while i < len(code):
@@ -403,6 +483,13 @@ def _statements(text: str) -> Iterator[tuple[str, tuple[str, ...]]]:
             i = string.end()
             continue
         char = code[i]
+        text = "".join(current).rstrip()
+        if char in "([":
+            depth += 1
+        elif char in ")]":
+            depth = max(depth - 1, 0)
+        if char == "\n" and (depth or text.endswith((",", "=", "+", "(", "&&", "||"))):
+            char = " "  # the statement goes on: `include 'a',\n 'b'`, `exclude(\n "x"\n)`
         if char == "{":
             stack.append("".join(current).strip().rsplit("\n", 1)[-1])
             current = []
@@ -420,7 +507,20 @@ def _statements(text: str) -> Iterator[tuple[str, tuple[str, ...]]]:
         yield "".join(current).strip(), tuple(stack)
 
 
-def _gradle(text: str | None) -> _Gradle:
+def _assignment(statement: str) -> tuple[str, str, str] | None:
+    """(receiver, property, value) of an assignment in any of its spellings, or None."""
+    statement = _SETTER.sub(lambda m: f"{m[1][0].lower()}{m[1][1:]} = {m[2]}", statement)
+    statement = _PROPERTY_SET.sub(r"\1 = \2", statement)
+    match = _ASSIGN.match(statement)
+    if not match:
+        return None
+    name = match[2]
+    if re.match(r"is[A-Z]", name):
+        name = name[2:]
+    return match[1], name[0].lower() + name[1:], match[3]
+
+
+def _gradle(text: str | None, settings: bool = False) -> _Gradle:
     facts = _Gradle()
     for statement, stack in _statements(text or ""):
         headers = " ".join(stack)
@@ -430,24 +530,38 @@ def _gradle(text: str | None) -> _Gradle:
             facts.tasks.add(task)
         word = statement.split("(", 1)[0].split()[0] if statement.split() else ""
         strings = [s[1:-1] for s in _STRING.findall(statement)]
-        assign = _ASSIGN.match(statement)
+        bare = word.rsplit(".", 1)[-1]
+        if settings:
+            if bare == "include" and not stack:
+                facts.projects |= set(strings)
+            continue
+        assign = _assignment(statement)
         if assign:
-            prefix = statement.split(assign[2], 1)[0]
-            name, value = assign[2][0].lower() + assign[2][1:], assign[3]
+            prefix, name, value = assign
             test_task = in_test or bool(_TEST_HEADER.search(prefix))
-            if name == "ignoreFailures" and value == "true" and test_task:
-                facts.switches["ignoreFailures = true"] += 1
-            elif name == "enabled" and value == "false" and "violationRules" in headers:
+            report = re.search(r"(?i)report", prefix + headers)
+            if name == "ignoreFailures" and value != "false" and test_task:
+                facts.switches[f"ignoreFailures = {value}"] += 1
+            elif name == "enabled" and value != "true" and "violationRules" in headers:
                 facts.switches["a JaCoCo rule disabled"] += 1
-            elif name == "enabled" and value == "false" and test_task:
-                facts.switches["a test task disabled (`enabled = false`)"] += 1
-            elif name == "failOnViolation" and value == "false":
-                facts.switches["failOnViolation = false"] += 1
+            elif name == "enabled" and value != "true" and test_task and not report:
+                facts.switches[f"a test task disabled (`enabled = {value}`)"] += 1
+            elif name == "failOnViolation" and value != "true":
+                facts.switches[f"failOnViolation = {value}"] += 1
         if "excludedTaskNames" in statement and any(_TEST_HEADER.search(s) for s in strings):
             facts.switches["test tasks excluded (`excludedTaskNames`)"] += 1
-        if stack and stack[-1].endswith("onlyIf") and statement == "false" and in_test:
-            facts.switches["a test task disabled (`onlyIf { false }`)"] += 1
-        bare = word.rsplit(".", 1)[-1]
+        conditional = stack and re.search(r"\bonlyIf\b", stack[-1])
+        if in_test and (conditional or bare == "onlyIf") and statement != "true":
+            facts.switches["a test task made conditional (`onlyIf`)"] += 1
+        if in_test and stack and re.search(r"(^|\.)\s*exclude\s*$", stack[-1]):
+            facts.switches["tests excluded by a closure (`exclude { ... }`)"] += 1
+        if _DEPENDS_REMOVED.search(statement) and re.search(
+            r"\b(check|build)\b", statement + " " + headers
+        ):
+            facts.switches["`check` or `build` no longer depending on tests"] += 1
+        if (in_test or "test" in statement.lower()) and _SOURCES.search(statement):
+            if "+=" not in statement and (assign or "set" in statement):
+                facts.sources.add((task, re.sub(r"\s+", "", statement)))
         if bare in _EXCLUDE_LISTS or (bare == "exclude" and in_test):
             facts.excludes |= {(task, bare, s) for s in strings}
         elif bare in _INCLUDE_LISTS or (bare == "include" and in_test):
@@ -457,14 +571,30 @@ def _gradle(text: str | None) -> _Gradle:
     return facts
 
 
-def gradle(before: str | None, after: str | None) -> Iterator[Loosening]:
+def gradle(
+    before: str | None,
+    after: str | None,
+    name: str = "build.gradle",
+    gone: Callable[[str], bool] = lambda project: False,
+) -> Iterator[Loosening]:
+    """gone(folder): the subproject is deleted or moved with its tests, not just left out."""
     if after is None:
         return
-    old, new = _gradle(before), _gradle(after)
+    settings = name.startswith("settings.")
+    old, new = _gradle(before, settings), _gradle(after, settings)
+    for project in sorted(old.projects - new.projects):
+        if not gone(project.strip(":").replace(":", "/")):
+            yield (f"Gradle settings no longer include project `{project}`, so its tests "
+                   "don't run", project)  # fmt: skip
     for switch in sorted(new.switches - old.switches):
         yield (f"The Gradle build now has {switch}", switch.split()[0].strip("`"))
     # A test task the change adds runs tests that didn't run before, whatever it selects.
-    existed = old.tasks | {_ALL_TEST_TASKS}
+    # `test` exists in every Java build, even when this file didn't configure it before.
+    existed = old.tasks | {_ALL_TEST_TASKS, "test"}
+    for task, assignment in sorted(new.sources - old.sources):
+        if task in existed:
+            yield (f"Gradle task `{task}` now reads tests from elsewhere: `{assignment}`",
+                   assignment.split("=")[0])  # fmt: skip
     for task, kind, pattern in sorted(new.excludes - old.excludes):
         if task in existed:
             yield (f"Gradle task `{task}` now excludes `{pattern}` ({kind})", pattern)

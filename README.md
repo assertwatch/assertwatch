@@ -204,12 +204,16 @@ of an enclosing class) is credited with the helper's checks, as in Python. Skips
 `@Disabled`, `@Ignore`, `@DisabledIf*`/`@EnabledIf*` and the other conditions, and
 `assumeTrue`-style calls. Parametrized cases are counted for `@ValueSource`, `@CsvSource`
 (including text blocks) and `@NullSource`/`@EmptySource`. Maven and Gradle config (AW009):
-`pom.xml` (Surefire/Failsafe skips, `testFailureIgnore`, excludes, narrowed includes or
-`groups`, a module dropped from the build, JaCoCo limits lowered), `build.gradle(.kts)`
-(`ignoreFailures`, a disabled test task, `exclude`, `excludeTestsMatching`, `excludeTags`,
-JaCoCo `minimum` lowered), `.mvn/maven.config` and `mvn`/`gradle` runs in CI (`-DskipTests`,
-`-Dmaven.test.failure.ignore`, `-x test`). Most Java corpus cases are written for the purpose,
-not modeled on real commits.
+`pom.xml` and Maven `settings.xml` (Surefire/Failsafe skips, also through a property or a
+profile that turns on by itself, `testFailureIgnore`, excludes and excluded engines, narrowed
+includes or `groups`, another test source folder, a module dropped while its tests stay,
+JaCoCo limits lowered), every `*.gradle(.kts)` script (`ignoreFailures`, a disabled or
+`onlyIf` test task, `exclude`, `excludeTestsMatching`, `excludeTags`, test sources emptied,
+`check` no longer depending on `test`, a subproject dropped from settings, JaCoCo `minimum`
+lowered), `.mvn/maven.config`, and `mvn`/`gradle` runs in GitHub workflows, other CI files
+and shell scripts (`-DskipTests`, `-Dmaven.test.failure.ignore`, `-x test`, a run that no
+longer tests, `if: false`, a test workflow deleted or no longer run on push or pull
+request). Most Java corpus cases are written for the purpose, not modeled on real commits.
 On the last 300 test-touching commits of commons-lang, jsoup and jackson-core (900), 53
 block; labelling a sample puts about 2.8% of commits blocked wrongly (Python: about 2.6%),
 mostly tests moved between files and rewritten
@@ -243,15 +247,18 @@ suppress anything; they are reported as AW000 for a human to approve.
 `make eval` replays the labelled corpus in [`corpus/cases/`](corpus/cases): small, complete
 changes, each one a cheat that should be caught or a refactor that shouldn't be blocked. The
 refactors are modeled on real commits from open-source projects that earlier versions
-blocked. Results today: **81 of 85 cheats caught, 1 of 64 refactors blocked** (95% recall,
-2% false positives on refactors; 2 more refactors get a warning). That includes 34 Java
-cheats and 24 Java refactors, all handled.
+blocked. Results today: **97 of 105 cheats caught, 1 of 70 refactors blocked** (92% recall,
+1% false positives on refactors; 2 more refactors get a warning). That includes 59 Java
+cheats and 35 Java refactors; two of the Java cheats are known misses (below).
 
 - **Missed:** a check for exactly two warnings swapped one-for-one for
   `pytest.warns`, which passes on one: the count stays the same and nothing compares the two.
   And a property test whose Hypothesis input range was narrowed. And a test moved to a new
   file (or given a body import) that points at a stand-in for the code under test: a test
-  that keeps its name is read as moved, and imports aren't compared.
+  that keeps its name is read as moved, and imports aren't compared. In Java builds: a
+  module that starts reading a property already set to `true` in a pom the change doesn't
+  touch, and CI starting to build with an existing profile that skips tests (`-Pquick`):
+  AW009 reads only the files in the change.
 - **Blocked by mistake:** a warning checked through a CLI runner's `result.exception`,
   replaced by `pytest.warns(..., match=...)`. Nothing ties `result.exception` to the warning
   the way a `catch_warnings(record=True)` capture is tied, so the dropped checks can't be

@@ -13,6 +13,7 @@ from assertwatch.gitdiff import (
     commit_messages,
     diff_lines,
     files_defining,
+    files_under,
     read_text,
 )
 from assertwatch.model import Finding, TestFile
@@ -81,6 +82,7 @@ def check_diff(repo: Path, base: str, head: str | None = None) -> CheckResult:
         config=config,
         python2_dropped=python2_dropped(lambda path: read_text(repo, base, path)),
         find_copies=lambda names: _unchanged_copies(repo, head, names, changes, config),
+        tests_under=lambda folder: any(map(is_test_path, files_under(repo, head, folder))),
     )
     # A renamed file counts once, under its head path.
     paths = {f.path for f in head_files} | {f.path for f in base_files if f.path not in path_map}

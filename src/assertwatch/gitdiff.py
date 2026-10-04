@@ -300,3 +300,19 @@ def files_defining(repo: Path, ref: str | None, names: list[str]) -> list[str]:
     paths = [p.decode() for p in out.split(b"\0") if p]
     prefix = f"{ref}:" if ref is not None else ""
     return sorted(p.removeprefix(prefix) for p in paths)
+
+
+def files_under(repo: Path, ref: str | None, folder: str) -> list[str]:
+    """Files at ref (None = the working tree, untracked included) under folder."""
+    if ref is None:
+        args = ["ls-files", "-z", "--cached", "--others", "--exclude-standard", "--", folder]
+    else:
+        args = ["ls-tree", "-r", "-z", "--name-only", ref, "--", folder]
+    try:
+        out = run_git(args, repo)
+    except GitError:
+        return []
+    paths = {p.decode() for p in out.split(b"\0") if p}
+    if ref is None:  # the index still lists files deleted from the working tree
+        paths = {p for p in paths if (repo / p).exists()}
+    return sorted(paths)
