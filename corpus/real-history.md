@@ -61,3 +61,58 @@ compare (19), dead Python 2 branches removed in the commit that drops Python 2 (
 xfail case that started passing (20), and a unittest-to-pytest conversion that moved
 assertions into new skipped tests (22). Each is a block a reviewer clears in seconds, but it
 is still a block.
+
+## Second sample
+
+**Method.** At commit 69f4be6, 135 commits block. Leaving out the 30 above, 30 of the other
+110 were drawn at random (`random.seed(20261003)`) and labelled the same way.
+
+**Result.** 17 intended, 4 weakenings, 9 false positives. Two of the false-positive patterns
+are fixable and are in the corpus as known cases (`refactor-32`, `refactor-33`); one weakening
+showed a cheat nothing detects yet (`cheat-39`).
+
+| # | Project | Commit | Rule | Label | What happened |
+|---|---|---|---|---|---|
+| 1 | click | `b761eda3ba` | AW003 | intended | Pager tests skipped on Windows |
+| 2 | dateutil | `38a5cd8486` | AW005 | intended | Tests-only fix of a test input (`GMT` to `GMT0`) |
+| 3 | click | `1103c5cac2` | AW001 | false positive | Leftover duplicate removed; an earlier commit had copied it to a file this one doesn't touch |
+| 4 | more-itertools | `d766332e40` | AW001 | weakening | Tests-only: the `RuntimeError` check on `iterate` removed, nothing replaces it |
+| 5 | click | `0e0c00324a` | AW002 | intended | `mix_stderr` removed; its checks go with it |
+| 6 | attrs | `c422bf8041` | AW001 | intended | Deprecated `Attribute.cmp` removed with its test |
+| 7 | more-itertools | `28f5e8f142` | AW001 | intended | `derangements` and `distinct_derangements` removed with their tests |
+| 8 | attrs | `f580185cc4` | AW001 | intended | `cmp` undeprecated: its deprecation tests removed |
+| 9 | click | `b64ea07128` | AW001 | intended | Bad defaults now fail at invocation, not definition; tests rewritten and renamed |
+| 10 | dateutil | `22715e30d1` | AW001 | false positive | Tests replaced by parametrized ones that generate their inputs; also folded into an unchanged parametrized test and reported as 4 cases short |
+| 11 | attrs | `9b98a730bf` | AW001 | false positive | Pre-3.10 test removed in the commit that drops 3.9 (its base still declares 3.9) |
+| 12 | attrs | `f10d050864` | AW001 | intended | Recursive `evolve` reverted with its tests |
+| 13 | more-itertools | `4bd0bd8762` | AW001 | false positive | Tests consolidated; iterator, unsortable and unhashable inputs still covered |
+| 14 | click | `39413d9b1d` | AW001 | false positive | Test rewritten as a parametrized test with more cases and new values |
+| 15 | click | `1557e26522` | AW002 | false positive | `isinstance(result.exception, UserWarning)` and its message check become `pytest.warns(match=...)` (refactor-13 models a simpler form) |
+| 16 | dateutil | `6b535072b4` | AW001 | weakening | Moving property tests dropped the negative-year check and narrowed another test's input range |
+| 17 | attrs | `22ae8473fb` | AW002 | intended | `assoc` stops warning: `deprecated_call` checks removed |
+| 18 | more-itertools | `0d5262795d` | AW004 | intended | `too_short` called once: the exception check gives way to a call-count check |
+| 19 | click | `80efdf6c10` | AW002 | intended | `CliRunner` raises at end of input, so `not result.exception` goes |
+| 20 | dateutil | `0853d611cd` | AW001 | false positive | Removed test asserted nothing and called nothing; its renamed replacement checks the error |
+| 21 | click | `3b06e0b75a` | AW001 | weakening | Pager tests rewritten; the trailing-whitespace `PAGER` variants dropped |
+| 22 | dateutil | `435d93be47` | AW001 | intended | Time-only check moved into a class skipped unless the time zone can be changed |
+| 23 | attrs | `8c9a79680f` | AW003 | intended | Match-args tests limited to 3.10+, where the behavior exists |
+| 24 | click | `777a89e232` | AW009 | intended | Stress tests deselected by default and run in their own CI job |
+| 25 | click | `bc21607df9` | AW001 | intended | Help-padding change reverted with its tests |
+| 26 | attrs | `78cb7d4903` | AW001 | false positive | Test renamed and split in two |
+| 27 | attrs | `a18b3957d5` | AW003 | intended | Annotation tests limited to 3.11+, whose output changed |
+| 28 | markupsafe | `7063a31836` | AW001 | false positive | Module parametrization moved into a parametrized conftest fixture: same 20 runs, counted as 10 |
+| 29 | more-itertools | `ddd678209d` | AW001 | intended | `random_ordered_*` API thinned; removed functions' tests go |
+| 30 | dateutil | `0f8f239e69` | AW002 | weakening | Python 3.6 fix drops the "no cache problem" checks |
+
+**Both samples together.** The 25 commits of the first sample that still block are labelled
+(9 false positives); the second sample stands for the other 110 (9 of 30). That is about 42
+commits blocked wrongly, **about 3.2% of the 1,318** (95% interval roughly 2.1-4.7%), and about
+7.1% blocked rightly. Eight real weakenings were found across the 60 labels.
+
+**Fixable patterns from this sample:** a leftover duplicate whose copy is in an unchanged file
+(3; needs a lookup outside the diff), and a removed test that checks and calls nothing (20).
+Also a bug that doesn't change a verdict: removed tests folded into an unchanged
+parametrized test get a misleading "fewer cases" finding (10). **Not fixable without
+understanding the code:** tests rewritten with new values or generated inputs (10, 13, 14,
+26), parametrization moved into fixtures (28), version tests removed in the commit that
+drops the version (11), and a warning checked through `result.exception` (15).
