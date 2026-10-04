@@ -274,7 +274,10 @@ ai_patterns = ["^my-agent <agent@example[.]com>$"]   # optional, added to the de
 ```
 
 A routed finding says so (`block lowered to warn by [routing]`), and `--fail-on warn` still
-fails on it. Proposed waivers (AW000) are never routed.
+fails on it. Proposed waivers (AW000) are never routed. Anything invalid in `[routing]` (an
+unknown value, a misspelled key), or a config file that doesn't parse, means "block" for every
+author. A merge commit counts as touching what it changed against its first parent, so edits
+made while resolving a merge are attributed to whoever made the merge.
 
 **The `human` default trusts what commits say about themselves.** Author names and trailers
 are written by whoever makes the commit: an agent that commits under your git identity

@@ -8,7 +8,7 @@ from gitutil import commit_all, git, write
 from assertwatch import hook
 from assertwatch.attribution import Attributor, Commit, _paths_by_commit
 from assertwatch.check import check_diff
-from assertwatch.config import DEFAULT_ROUTING, parse_config
+from assertwatch.config import DEFAULT_ROUTING, STRICT_ROUTING, parse_config
 from assertwatch.model import Severity
 from assertwatch.report import Report, render
 
@@ -173,17 +173,71 @@ def test_ai_patterns_from_config(repo):
 
 
 def test_routing_config_errors():
-    config = parse_config(
-        '[routing]\nhuman = "off"\nrobot = "warn"\nai = "warn"\nai_patterns = ["(", "ok"]\n'
-    )
-    assert config.routing == {**DEFAULT_ROUTING, "ai": "warn"}
+    config = parse_config('[routing]\nai = "warn"\nai_patterns = ["(", "ok"]\n')
+    assert config.routing == {**DEFAULT_ROUTING, "ai": "warn"}  # the base's own choice
     assert config.ai_patterns == ("ok",)
-    assert len(config.errors) == 3
-    assert parse_config("routing = 1\n").errors == ["assertwatch.toml: [routing] must be a table"]
+    assert len(config.errors) == 1
     assert parse_config('[routing]\nai_patterns = "x"\n').errors == [
         "assertwatch.toml: [routing] ai_patterns must be a list of strings"
     ]
     assert parse_config(None).routing == DEFAULT_ROUTING
+    assert parse_config("").routing == DEFAULT_ROUTING
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        '[routing]\nhuman = "off"\n',  # not block or warn
+        '[routing]\nhuman = "Warn"\n',
+        "[routing]\nhuman = 1\n",
+        '[routing]\nhumans = "block"\n',  # misspelled: it meant to block humans
+        '[routing]\nai = "warn"\nrobot = "warn"\n',
+        "routing = 1\n",
+        'routing = "human=block"\n',
+        '[routing\nhuman = "block"\n',  # the whole file is unreadable
+    ],
+)
+def test_invalid_routing_fails_closed(text):
+    config = parse_config(text)
+    assert config.routing == STRICT_ROUTING
+    assert config.errors
+
+
+def test_empty_ai_patterns_keep_the_defaults(repo):
+    write(repo, "assertwatch.toml", "[routing]\nai_patterns = []\n")
+    base = commit_as(repo, HUMAN)
+    write(repo, "tests/test_cart.py", WEAKENED)
+    sha = commit_as(repo, HUMAN, f"weaken\n\n  {TRAILER.lower()}")  # indented, lower case
+    finding = only(check_diff(repo, base, sha))
+    assert (finding.author, finding.severity) == ("ai", Severity.BLOCK)
+
+
+def test_a_file_named_like_a_log_header_cannot_move_paths_to_another_commit(repo):
+    # The agent's commit adds a file whose name looks like git log's commit header, naming
+    # the human commit: under --name-only, every path after it went to that commit, so the
+    # test file looked touched by the human only and was routed to a warning.
+    write(repo, "tests/test_cart.py", TESTS + "\n\ndef test_more():\n    assert more()\n")
+    human = commit_as(repo, HUMAN)
+    write(repo, "tests/test_cart.py", WEAKENED + "\n\ndef test_more():\n    assert more()\n")
+    write(repo, f"\x01commit {human}", "x\n")
+    sha = commit_as(repo, HUMAN, f"weaken\n\n{TRAILER}")
+    (finding,) = [f for f in check_diff(repo, f"{human}~1", sha).findings if f.rule == "AW004"]
+    assert (finding.author, finding.severity) == ("mixed", Severity.BLOCK)
+
+
+def test_an_agent_merge_that_edits_the_test_counts(repo):
+    # An evil merge: the weakening is made while resolving a merge the agent commits.
+    git(repo, "checkout", "-q", "-b", "side")
+    write(repo, "src/other.py", "x = 1\n")
+    commit_as(repo, HUMAN)
+    git(repo, "checkout", "-q", "main")
+    write(repo, "tests/test_cart.py", TESTS + "\n\ndef test_more():\n    assert more()\n")
+    commit_as(repo, HUMAN)
+    git(repo, "merge", "-q", "--no-ff", "--no-commit", "side")
+    write(repo, "tests/test_cart.py", WEAKENED + "\n\ndef test_more():\n    assert more()\n")
+    sha = commit_as(repo, HUMAN, f"Merge side\n\n{TRAILER}")
+    (finding,) = [f for f in check_diff(repo, f"{sha}~1~1", sha).findings if f.rule == "AW004"]
+    assert (finding.author, finding.severity) == ("mixed", Severity.BLOCK)
 
 
 def test_uncommitted_changes_are_unknown_and_block(repo):
@@ -237,6 +291,19 @@ def test_hook_session_is_ai_whatever_the_commit_identity(repo):
     assert f"author: ai (Claude Code session since {start[:12]})" in err
     finding = only(check_diff(repo, start, None, hook=True, session=start))
     assert (finding.author, finding.severity) == ("ai", Severity.BLOCK)
+
+
+def test_hook_session_survives_rewritten_history(repo):
+    # The agent rewrites history so the recorded start is no longer an ancestor of HEAD.
+    write(repo, "src/cart.py", "def total():\n    return 10  # x\n")
+    commit_as(repo, HUMAN)
+    run_hook(repo, "SessionStart")
+    git(repo, "reset", "-q", "--hard", "HEAD~1")
+    write(repo, "tests/test_cart.py", WEAKENED)
+    commit_as(repo, HUMAN)
+    code, _, err = run_hook(repo)
+    assert code == hook.EXIT_BLOCK
+    assert "author: ai (Claude Code session since" in err
 
 
 def test_hook_without_a_session_trusts_no_human_commit(repo):
@@ -329,14 +396,18 @@ def test_agent_trace_for_another_revision_is_ignored(repo):
 
 
 def test_paths_by_commit_parses_odd_names():
+    a, b, c = "a" * 40, "b" * 40, "c" * 64
     text = (
-        "\x01commit aaa\0\nsp ace.py\0new\nline.py\0 lead.py \0"
-        "\x01commit bbb\0\x01commit ccc\0\nx.py\0"
+        f"\x01commit {a}\0\n1\t0\tsp ace.py\0-\t-\tnew\nline.py\0" + "2\t2\t lead.py \0"
+        f"3\t0\t\x01commit {b}\0"  # a file named like a header stays a path of a
+        f"\x01commit {b}\0\x01commit {c}\0\n1\t1\tx.py\0"
+        "\x01commit nothex\0"  # not a commit: ignored, paths stay with c
+        "1\t1\ty.py\0"
     )
     assert _paths_by_commit(text) == {
-        "aaa": frozenset({"sp ace.py", "new\nline.py", " lead.py "}),
-        "bbb": frozenset(),
-        "ccc": frozenset({"x.py"}),
+        a: frozenset({"sp ace.py", "new\nline.py", " lead.py ", f"\x01commit {b}"}),
+        b: frozenset(),
+        c: frozenset({"x.py", "y.py"}),
     }
 
 

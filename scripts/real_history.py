@@ -114,7 +114,7 @@ def replay(only: str | None) -> tuple[dict[str, int], list[dict]]:
 def _routed_block(finding: dict) -> bool:
     if finding["sev"] != "block":
         return False
-    return finding["rule"] == "AW000" or DEFAULT_ROUTING.get(finding["author"]) == "block"
+    return finding["rule"] == "AW000" or DEFAULT_ROUTING.get(finding["author"], "block") == "block"
 
 
 def routing_summary(lang: str, flagged: list[dict]) -> None:

@@ -33,7 +33,7 @@ from assertwatch.model import Finding, Severity
 # Matched case-insensitively against each author and committer ("Name <email>") and each
 # line of the commit message.
 DEFAULT_AI_PATTERNS = (
-    r"^co-authored-by:.*\b(claude|anthropic|copilot|codex|openai|chatgpt|cursor|devin|jules"
+    r"^\s*co-authored-by:.*\b(claude|anthropic|copilot|codex|openai|chatgpt|cursor|devin|jules"
     r"|gemini|aider|openhands|windsurf|codeium|cline|tabnine)\b",
     r"\bgenerated (with|by) \[?(claude code|codex|copilot|cursor|aider|gemini)",
     r"noreply@anthropic\.com",
@@ -48,6 +48,10 @@ TRACE_DIR = ".agent-trace"
 _TRACE_MAX_FILES = 200
 _TRACE_MAX_BYTES = 5_000_000
 _HEADER = "\x01commit "
+# One --numstat -z entry: "<added>\t<deleted>\t<path>" ("-" for binary). A path can't fake a
+# header, since every path is printed after its two counts.
+_NUMSTAT = re.compile(r"(?:\d+|-)\t(?:\d+|-)\t(.*)", re.DOTALL)
+_COMMIT = re.compile(r"[0-9a-f]{40}|[0-9a-f]{64}")
 _WAIVER_RULE = "AW000"
 
 
@@ -162,12 +166,16 @@ def _commits(repo: Path, base: str, head: str, patterns: list[re.Pattern]) -> li
         idents = run_git(
             ["log", "-z", "--format=%H%x1f%an <%ae>%x1f%cn <%ce>%x1f%B", f"{base}..{head}"], repo
         )
+        # --numstat, not --name-only: a file named like a header ("\x01commit <sha>") would
+        # take the paths after it away from the commit that changed them. A merge counts with
+        # what it changed against its first parent, so an evil merge's edits aren't lost.
         names = run_git(
             [
                 "log",
                 "-z",
                 "--no-renames",
-                "--name-only",
+                "--numstat",
+                "--diff-merges=first-parent",
                 f"--format={_HEADER}%H",
                 f"{base}..{head}",
             ],
@@ -201,15 +209,18 @@ def _match(patterns: list[re.Pattern], text: str) -> str | None:
 
 
 def _paths_by_commit(text: str) -> dict[str, frozenset[str]]:
-    """Parse `git log -z --name-only --format=<header>%H`: a header, then its paths."""
+    """Parse `git log -z --numstat --format=<header>%H`: a header, then one entry per path."""
     result: dict[str, set[str]] = {}
     current: set[str] | None = None
     for token in text.split("\0"):
         token = token.removeprefix("\n")
-        if token.startswith(_HEADER):
+        entry = _NUMSTAT.fullmatch(token)
+        if entry is not None:
+            if current is not None:
+                path = entry.group(1)
+                current.add(path.encode("utf-8", "surrogateescape").decode("utf-8", "replace"))
+        elif token.startswith(_HEADER) and _COMMIT.fullmatch(token.removeprefix(_HEADER)):
             current = result.setdefault(token.removeprefix(_HEADER), set())
-        elif token and current is not None:
-            current.add(token.encode("utf-8", "surrogateescape").decode("utf-8", "replace"))
     return {sha: frozenset(paths) for sha, paths in result.items()}
 
 

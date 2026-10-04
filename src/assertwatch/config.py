@@ -28,6 +28,8 @@ SEVERITIES = frozenset({"block", "warn", "info", "off"})
 AUTHORS = ("ai", "mixed", "unknown", "human")
 ROUTES = frozenset({"block", "warn"})
 DEFAULT_ROUTING = {"ai": "block", "mixed": "block", "unknown": "block", "human": "warn"}
+# Routing when [routing] or the whole file can't be read: nothing is lowered (fail closed).
+STRICT_ROUTING = dict.fromkeys(AUTHORS, "block")
 
 
 @dataclass(frozen=True)
@@ -65,7 +67,10 @@ def parse_config(text: str | None) -> Config:
     try:
         data = tomllib.loads(text)
     except tomllib.TOMLDecodeError as exc:
-        return Config(errors=[f"{CONFIG_PATH}: {exc}; using defaults"])
+        # The defaults, except that nothing is lowered: the file may say human = "block".
+        return Config(
+            errors=[f"{CONFIG_PATH}: {exc}; using defaults"], routing=dict(STRICT_ROUTING)
+        )
     config = Config()
 
     paths = data.get("test_paths", [])
@@ -100,23 +105,33 @@ def parse_config(text: str | None) -> Config:
 
 
 def _routing(data: dict, config: Config) -> None:
+    """Read [routing]. Anything invalid in it means "block" for every author: a typo must
+    never lower a finding the config meant to keep blocking."""
     routing = data.get("routing", {})
     if not isinstance(routing, dict):
-        config.errors.append(f"{CONFIG_PATH}: [routing] must be a table")
+        config.errors.append(f"{CONFIG_PATH}: [routing] must be a table; blocking for all")
+        config.routing = dict(STRICT_ROUTING)
         return
+    invalid = False
     for key, value in routing.items():
         if key == "ai_patterns":
             continue
         if key not in AUTHORS:
+            invalid = True
             config.errors.append(
-                f"{CONFIG_PATH}: [routing] {key} is not one of " + ", ".join(AUTHORS)
+                f"{CONFIG_PATH}: [routing] {key} is not one of {', '.join(AUTHORS)}; "
+                "blocking for all"
             )
         elif value in ROUTES:
             config.routing[key] = value
         else:
+            invalid = True
             config.errors.append(
-                f"{CONFIG_PATH}: [routing] {key} = {value!r} is not one of block, warn"
+                f"{CONFIG_PATH}: [routing] {key} = {value!r} is not one of block, warn; "
+                "blocking for all"
             )
+    if invalid:
+        config.routing = dict(STRICT_ROUTING)
     patterns = routing.get("ai_patterns", [])
     if not isinstance(patterns, list) or not all(isinstance(p, str) for p in patterns):
         config.errors.append(f"{CONFIG_PATH}: [routing] ai_patterns must be a list of strings")
