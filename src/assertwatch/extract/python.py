@@ -16,7 +16,10 @@ from __future__ import annotations
 
 import ast
 import math
+import operator
+import re
 from collections.abc import Iterator
+from dataclasses import replace
 
 from assertwatch.model import Assertion, ParamCase, TestCase, TestFile, TryBlock
 
@@ -169,7 +172,22 @@ def _decorator_markers(decorators: list[ast.expr]) -> frozenset[str]:
         markers.add(name)
         if name == "parametrize" and isinstance(dec, ast.Call):
             markers.update(_param_marks(dec))
+        if _runs_only_on_py2(name, dec):
+            markers.add("py2-only")
     return frozenset(markers)
+
+
+def _runs_only_on_py2(marker: str, dec: ast.expr) -> bool:
+    """`skipif(not PY2)` or `skipUnless(PY2)`: the test is skipped everywhere but Python 2."""
+    if marker not in ("skipif", "skipunless") or not isinstance(dec, ast.Call) or not dec.args:
+        return False
+    condition = dec.args[0]
+    if isinstance(condition, ast.Constant) and isinstance(condition.value, str):
+        try:  # pytest evaluates string conditions: skipif("sys.version_info >= (3,)")
+            condition = ast.parse(condition.value, mode="eval").body
+        except SyntaxError:
+            return False
+    return py2_gate(condition) is (marker == "skipunless")
 
 
 def _param_marks(call: ast.Call) -> set[str]:
@@ -321,9 +339,11 @@ def _test_case(
                 case.mocks.append(target)
 
     captures = {"recwarn"} & {a.arg for a in node.args.args}
+    py2 = _py2_only_nodes(stmts)
     for sub in _walk_body(stmts):
+        dead = id(sub) in py2
         if isinstance(sub, ast.Assert):
-            case.assertions.append(Assertion("assert", "", ast.unparse(sub), sub.lineno))
+            case.assertions.append(Assertion("assert", "", ast.unparse(sub), sub.lineno, dead))
         elif isinstance(sub, ast.Try | ast.TryStar):
             case.try_blocks.append(_try_block(sub))
         elif isinstance(sub, ast.withitem):
@@ -331,10 +351,10 @@ def _test_case(
         elif isinstance(sub, ast.Call):
             inlined = helpers.assertions(dotted(sub.func), sub.lineno)
             if inlined is not None:
-                case.assertions.extend(inlined)
+                case.assertions.extend(replace(a, py2_only=dead) for a in inlined)
                 case.call_count += 1
             else:
-                _classify_call(sub, case)
+                _classify_call(sub, case, dead)
     case.captures = frozenset(captures)
     return case
 
@@ -353,6 +373,101 @@ def _capture(item: ast.withitem) -> set[str]:
     ):
         return {target.id}
     return set()
+
+
+# --- Python 2 branches ------------------------------------------------------------------
+
+_PY2_NAME = re.compile(r"(IS_)?PY(THON)?_?2\d?")
+_PY3_NAME = re.compile(r"(IS_)?PY(THON)?_?3")
+_COMPARE_OPS = {
+    ast.Eq: operator.eq,
+    ast.NotEq: operator.ne,
+    ast.Lt: operator.lt,
+    ast.LtE: operator.le,
+    ast.Gt: operator.gt,
+    ast.GtE: operator.ge,
+}
+# Interpreter versions a Python 3 test suite can run on, for evaluating version checks.
+_PY3_VERSIONS = ((3, 0, 0), (3, 5, 0), (3, 13, 0))
+
+
+def _py2_only_nodes(stmts: list[ast.stmt]) -> set[int]:
+    """ids of the nodes in branches that only run on Python 2."""
+    dead: set[int] = set()
+    for node in _walk_body(stmts):
+        if isinstance(node, ast.If) and id(node) not in dead:
+            gate = py2_gate(node.test)
+            branch = node.body if gate is True else node.orelse if gate is False else []
+            dead.update(id(n) for n in _walk_body(branch))
+    return dead
+
+
+def py2_gate(expr: ast.expr) -> bool | None:
+    """True if expr can only be true on Python 2, False if it can only be false there.
+
+    `PY2`, `six.PY2`, `sys.version_info[0] == 2`, `sys.version_info < (3,)` -> True;
+    `PY3`, `not PY2`, `sys.version_info >= (3,)` -> False; anything else -> None. A check
+    on a Python 3 minor version (`< (3, 8)`) is None: that branch may still run.
+    """
+    if isinstance(expr, ast.UnaryOp) and isinstance(expr.op, ast.Not):
+        inner = py2_gate(expr.operand)
+        return None if inner is None else not inner
+    if isinstance(expr, ast.BoolOp):
+        gates = [py2_gate(v) for v in expr.values]
+        # `PY2 and x` is true only on Python 2; `PY3 or x` is false only there
+        wanted = isinstance(expr.op, ast.And)
+        return wanted if wanted in gates else None
+    if isinstance(expr, ast.Name | ast.Attribute):
+        last = dotted(expr).rsplit(".", 1)[-1]
+        if _PY2_NAME.fullmatch(last):
+            return True
+        if _PY3_NAME.fullmatch(last):
+            return False
+        return None
+    if isinstance(expr, ast.Compare) and len(expr.ops) == 1:
+        return _version_gate(expr.left, expr.ops[0], expr.comparators[0])
+    return None
+
+
+def _version_gate(left: ast.expr, op: ast.cmpop, right: ast.expr) -> bool | None:
+    compare = _COMPARE_OPS.get(type(op))
+    try:
+        bound = ast.literal_eval(right)
+    except (ValueError, TypeError, SyntaxError, MemoryError, RecursionError):
+        return None
+    if compare is None:
+        return None
+    if dotted(left).endswith("version_info") and isinstance(bound, tuple):
+        values = list(_PY3_VERSIONS)
+    elif _is_major(left) and isinstance(bound, int):
+        values = [v[0] for v in _PY3_VERSIONS]
+    else:
+        return None
+    try:
+        results = [compare(v, bound) for v in values]
+    except TypeError:
+        return None
+    if not any(results):
+        return True
+    if all(results):
+        return False
+    return None
+
+
+def _is_major(node: ast.expr) -> bool:
+    """`sys.version_info[0]` or `sys.version_info.major`."""
+    if isinstance(node, ast.Subscript):
+        index = node.slice
+        return (
+            dotted(node.value).endswith("version_info")
+            and isinstance(index, ast.Constant)
+            and index.value == 0
+        )
+    return (
+        isinstance(node, ast.Attribute)
+        and node.attr == "major"
+        and (dotted(node.value).endswith("version_info"))
+    )
 
 
 _Function = ast.FunctionDef | ast.AsyncFunctionDef
@@ -413,12 +528,12 @@ def _call_assertion(call: ast.Call) -> Assertion | None:
     return None
 
 
-def _classify_call(call: ast.Call, case: TestCase) -> None:
+def _classify_call(call: ast.Call, case: TestCase, py2_only: bool = False) -> None:
     name = dotted(call.func)
     last = name.rsplit(".", 1)[-1]
     assertion = _call_assertion(call)
     if assertion is not None:
-        case.assertions.append(assertion)
+        case.assertions.append(replace(assertion, py2_only=py2_only))
     elif name in _SKIP_CALLS or last == "skipTest":
         case.skip_calls.append(name)
     else:

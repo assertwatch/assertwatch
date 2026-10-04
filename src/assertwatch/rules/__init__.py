@@ -34,6 +34,7 @@ class Context:
     lines: list[DiffLine] = field(default_factory=list)  # added and removed lines, all files
     messages: list[str] = field(default_factory=list)  # commit messages in base..head
     new_test_files: frozenset[str] = frozenset()  # test files that didn't exist at base
+    python2_dropped: bool = False  # the base ref declares no Python 2 support
 
 
 @dataclass(frozen=True)
@@ -83,6 +84,7 @@ def run_rules(
     lines: Iterable[DiffLine] = (),
     messages: Iterable[str] = (),
     config: Config | None = None,
+    python2_dropped: bool = False,
 ) -> list[Finding]:
     """Match tests across base and head, run every rule, and return sorted findings.
 
@@ -99,6 +101,7 @@ def run_rules(
         list(lines),
         list(messages),
         frozenset(f.path for f in head_files if f.path not in old_paths),
+        python2_dropped,
     )
     selected = list(rules) if rules is not None else all_rules()
     findings = [f for rule in selected for f in rule.check(context)]

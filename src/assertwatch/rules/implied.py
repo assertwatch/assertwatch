@@ -2,6 +2,7 @@
 
 A test can lose assertions without checking less. AW002 asks this module before reporting a
 drop, and each case here has to be provable from the two versions of the test alone.
+(Assertions in dead Python 2 branches are left out before AW002 counts at all.)
 
 - **Captured warnings or exceptions.** `with warnings.catch_warnings(record=True) as w`
   followed by `assert issubclass(w[0].category, DeprecationWarning)` and
@@ -66,7 +67,7 @@ _SAFE_NAMES = {
 def implied(lost: list[str], base: TestCase, head: TestCase) -> set[str]:
     """The lost assertion texts that the head version of the test still guarantees."""
     base_texts = {a.text for a in base.assertions}
-    live = head.assertions
+    live = [a for a in head.assertions if not a.py2_only]  # dead code guarantees nothing
     contexts = [c for a in live if a.text not in base_texts and (c := _context(a)) is not None]
     head_exprs = [e for a in live if (e := _expr(a)) is not None]
     found: set[str] = set()

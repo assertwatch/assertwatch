@@ -1,8 +1,9 @@
+import ast
 from textwrap import dedent
 
 import pytest
 
-from assertwatch.extract.python import extract
+from assertwatch.extract.python import extract, py2_gate
 from assertwatch.paths import is_test_path
 
 
@@ -479,6 +480,67 @@ def test_helper_assertions_count_for_the_calling_test():
     assert [a.text for a in total.assertions] == ["self.assertEqual(cart.total(), total)"]
 
 
+@pytest.mark.parametrize(
+    ("condition", "gate"),
+    [
+        ("PY2", True),
+        ("six.PY2", True),
+        ("compat.IS_PY2", True),
+        ("PY27", True),
+        ("sys.version_info[0] == 2", True),
+        ("sys.version_info.major < 3", True),
+        ("sys.version_info < (3,)", True),
+        ("sys.version_info < (3, 0)", True),
+        ("PY2 and os.name == 'nt'", True),
+        ("not PY3", True),
+        ("PY3", False),
+        ("not PY2", False),
+        ("sys.version_info >= (3,)", False),
+        ("sys.version_info[0] == 3", False),
+        ("sys.version_info.major > 2", False),
+        ("PY3 or IS_PYPY", False),
+        ("sys.version_info < (3, 8)", None),
+        ("sys.version_info >= (3, 11)", None),
+        ("PY36", None),
+        ("PY2 or IS_PYPY", None),
+        ("os.name == 'nt'", None),
+        ("sys.version_info[1] < 8", None),
+    ],
+)
+def test_py2_gate(condition, gate):
+    assert py2_gate(ast.parse(condition, mode="eval").body) is gate
+
+
+def test_assertions_in_python2_branches_are_marked():
+    tests = collect(
+        """
+        def test_a():
+            if PY2:
+                assert f() == 4
+                self.assertEqual(g(), 1)
+            else:
+                assert f() == 5
+            if sys.version_info >= (3,):
+                assert h() == 1
+            else:
+                check()
+                if x:
+                    assert h() == 0
+        def check():
+            assert True
+        """
+    )
+    marks = [(a.text, a.py2_only) for a in tests["tests/test_x.py::test_a"].assertions]
+    assert marks == [
+        ("assert f() == 4", True),
+        ("self.assertEqual(g(), 1)", True),
+        ("assert f() == 5", False),
+        ("assert h() == 1", False),
+        ("assert True", True),
+        ("assert h() == 0", True),
+    ]
+
+
 def test_captured_warnings_and_exceptions():
     tests = collect(
         """
@@ -500,3 +562,34 @@ def test_captured_warnings_and_exceptions():
     )
     assert tests["tests/test_x.py::test_a"].captures == {"recwarn", "w", "exc"}
     assert tests["tests/test_x.py::T::test_b"].captures == {"cm"}
+
+
+@pytest.mark.parametrize(
+    ("decorator", "py2_only"),
+    [
+        ("@pytest.mark.skipif(not PY2, reason='x')", True),
+        ("@pytest.mark.skipif(PY3, reason='x')", True),
+        ("@pytest.mark.skipif('sys.version_info >= (3,)')", True),
+        ("@unittest.skipUnless(PY2, 'x')", True),
+        ("@pytest.mark.skipif(PY2, reason='x')", False),
+        ("@pytest.mark.skipif(sys.version_info < (3, 8), reason='x')", False),
+        ("@unittest.skipIf(PY2, 'x')", False),
+        ("@pytest.mark.xfail(not PY2, reason='x')", False),
+        ("@pytest.mark.skipif('not valid python(')", False),
+    ],
+)
+def test_tests_that_only_run_on_python2(decorator, py2_only):
+    tests = collect(f"{decorator}\ndef test_a():\n    assert f()\n")
+    assert ("py2-only" in tests["tests/test_x.py::test_a"].markers) is py2_only
+
+
+def test_python2_only_marker_is_inherited():
+    tests = collect(
+        """
+        @pytest.mark.skipif(not PY2, reason="py2 behavior")
+        class TestOnPy2:
+            def test_a(self):
+                assert f()
+        """
+    )
+    assert "py2-only" in tests["tests/test_x.py::TestOnPy2::test_a"].markers

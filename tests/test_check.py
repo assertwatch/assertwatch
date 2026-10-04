@@ -62,3 +62,32 @@ def test_unparsable_file_is_reported_not_treated_as_removed(repo):
     result = check_diff(repo, "main")
     assert result.findings == []
     assert len(result.errors) == 1 and result.errors[0].startswith("tests/test_cart.py: Syntax")
+
+
+PY2_BRANCH = (
+    "def test_total():\n    if PY2:\n        assert total() == 9\n    assert total() == 10\n"
+)
+PY3_ONLY = "def test_total():\n    assert total() == 10\n"
+
+
+@pytest.mark.parametrize(
+    ("base_requires", "head_requires", "rules"),
+    [
+        (">=3.8", ">=3.8", []),  # Python 2 already dropped: the branch was dead
+        (">=2.7", ">=2.7", ["AW002"]),  # still supported: the branch ran on Python 2
+        (">=2.7", ">=3.8", ["AW002"]),  # the change can't drop support for its own check
+        (None, None, ["AW002"]),  # unknown support
+    ],
+)
+def test_python2_branches_follow_the_base_declaration(repo, base_requires, head_requires, rules):
+    def project(spec):
+        if spec is not None:
+            write(repo, "pyproject.toml", f'[project]\nname = "x"\nrequires-python = "{spec}"\n')
+
+    project(base_requires)
+    write(repo, "tests/test_cart.py", PY2_BRANCH)
+    base = commit_all(repo, "with a Python 2 branch")
+    project(head_requires)
+    write(repo, "tests/test_cart.py", PY3_ONLY)
+    head = commit_all(repo, "drop it")
+    assert [f.rule for f in check_diff(repo, base, head).findings] == rules

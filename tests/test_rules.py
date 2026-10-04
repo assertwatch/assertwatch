@@ -100,6 +100,21 @@ def test_aw001_file_rename_keeps_ids():
     assert [(f.rule, f.test_id) for f in found] == [("AW002", f"{new_path}::test_refund_rounding")]
 
 
+def test_aw001_removing_a_python2_only_test():
+    py2_only = '@pytest.mark.skipif(not PY2, reason="py2")\ndef test_old():\n    assert f()\n'
+    assert rules(REFUND + py2_only, REFUND, python2_dropped=True) == []
+    # unless Python 2 may still be supported
+    assert rules(REFUND + py2_only, REFUND) == ["AW001"]
+    # a test that also runs on Python 3 is still a removal
+    other = py2_only.replace("not PY2", "PY2")
+    assert rules(REFUND + other, REFUND, python2_dropped=True) == ["AW001"]
+    # and limiting a test to Python 2 is a new skip
+    limited = REFUND.replace(
+        "def test_refund", '@pytest.mark.skipif(not PY2, reason="py2")\ndef test_refund'
+    )
+    assert rules(REFUND, limited) == ["AW003"]
+
+
 def test_aw001_removing_an_empty_placeholder_is_fine():
     placeholder = '\ndef test_todo():\n    """Write me."""\n'
     assert rules(REFUND + placeholder, REFUND) == []
@@ -604,6 +619,20 @@ def test_aw002_lost_checks_the_test_still_guarantees(before, after):
             "    with pytest.raises(ValueError) as e:\n        f()\n    assert repr(ValueError)\n",
             "    with pytest.raises(ValueError, match='m'):\n        f()\n",
         ),
+        # live branches, and assertions moved into dead ones
+        (
+            "    if not PY2:\n        assert f() == 4\n    assert f() == 5\n",
+            "    assert f() == 5\n",
+        ),
+        (
+            "    if sys.version_info < (3, 8):\n        assert f() == 4\n    assert f() == 5\n",
+            "    assert f() == 5\n",
+        ),
+        ("    assert f() == 5\n", "    if PY2:\n        assert f() == 5\n"),
+        (
+            "    assert f() == 4\n    assert f() == 5\n",
+            "    if PY2:\n        assert f() == 4\n    assert f() == 5\n",
+        ),
     ],
     ids=[
         "value-fails-lost-check",
@@ -625,10 +654,55 @@ def test_aw002_lost_checks_the_test_still_guarantees(before, after):
         "raises-other-class",
         "contexts-other-match",
         "check-not-on-capture",
+        "live-not-py2-branch",
+        "minor-version-branch",
+        "moved-under-py2",
+        "one-of-two-moved-under-py2",
     ],
 )
-def test_aw002_lost_checks_that_stay_lost(before, after):
-    assert "AW002" in rules(one_test(before), one_test(after))
+@pytest.mark.parametrize("python2_dropped", [False, True])
+def test_aw002_lost_checks_that_stay_lost(before, after, python2_dropped):
+    found = rules(one_test(before), one_test(after), python2_dropped=python2_dropped)
+    assert "AW002" in found
+
+
+def test_aw002_moving_into_a_python2_branch_counts_once():
+    before = one_test("    assert f() == 4\n    assert f() == 5\n")
+    after = one_test("    if PY2:\n        assert f() == 4\n    assert f() == 5\n")
+    for dropped in (False, True):
+        [found] = run(before, after, python2_dropped=dropped)
+        assert (found.rule, found.before) == ("AW002", "assert f() == 4")
+        assert "has 1 assertion(s), down from 2" in found.message
+
+
+def test_aw002_a_python2_copy_of_a_check_that_stays_is_not_a_loss():
+    before = one_test("    assert f() == 5\n    assert g() == 1\n")
+    after = one_test("    assert f() == 5\n    if PY2:\n        assert f() == 5\n")
+    [found] = run(before, after, python2_dropped=True)
+    assert found.before == "assert g() == 1"
+    # while Python 2 may be supported, the copy runs there and keeps the count
+    assert run(before, after) == []
+
+
+def test_aw002_a_dead_copy_is_no_evidence_for_a_live_check():
+    before = one_test("    assert f() is not None\n    assert f() > 1\n")
+    after = one_test("    assert f() > 1\n    if PY2:\n        assert f() == 5\n")
+    assert rules(before, after, python2_dropped=True) == ["AW002"]
+
+
+@pytest.mark.parametrize(
+    "before",
+    [
+        "    if PY2:\n        assert f() == 4\n    assert f() == 5\n",
+        "    if sys.version_info >= (3,):\n        assert f() == 5\n"
+        "    else:\n        assert f() == 4\n",
+    ],
+    ids=["py2-branch", "py3-else-branch"],
+)
+def test_aw002_python2_branches_are_dead_only_when_python2_is_dropped(before):
+    before, after = one_test(before), one_test("    assert f() == 5\n")
+    assert rules(before, after, python2_dropped=True) == []
+    assert rules(before, after) == ["AW002"]  # support unknown, or Python 2 still supported
 
 
 # --- AW003 ------------------------------------------------------------------------------

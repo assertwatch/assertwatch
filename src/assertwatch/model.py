@@ -28,12 +28,15 @@ class Assertion:
                    self.assertRaises used as a context manager is kind "call"
     name is the called name for "call"/"raises" ("assertEqual", "raises"), "" for "assert".
     text is the normalized source (ast.unparse), stable across formatting changes.
+    py2_only is set when it sits in a branch that only runs on Python 2 (`if PY2:`, the
+    `else` of `if sys.version_info >= (3,):`), which is dead code today.
     """
 
     kind: str
     name: str
     text: str
     line: int
+    py2_only: bool = False
 
 
 @dataclass(frozen=True)
@@ -66,7 +69,9 @@ class TestCase:
     classes: tuple[str, ...]  # enclosing class chain, outermost first
     line: int
     end_line: int
-    markers: frozenset[str]  # "skip", "skipif", "xfail", "parametrize", ... (incl. inherited)
+    # "skip", "skipif", "xfail", "parametrize", ... (incl. inherited); "py2-only" when a
+    # skipif/skipUnless lets it run only on Python 2
+    markers: frozenset[str]
     assertions: list[Assertion] = field(default_factory=list)
     mocks: list[str] = field(default_factory=list)  # patch targets, e.g. "app.refund.calc"
     skip_calls: list[str] = field(default_factory=list)  # "pytest.skip", "self.skipTest", ...

@@ -10,6 +10,7 @@ from assertwatch.extract.python import extract
 from assertwatch.gitdiff import changed_files, commit_messages, diff_lines, read_text
 from assertwatch.model import Finding, TestFile
 from assertwatch.paths import is_guard_path, is_test_path
+from assertwatch.python_support import python2_dropped
 from assertwatch.rules import FileChange, run_rules
 
 
@@ -23,9 +24,9 @@ class CheckResult:
 def check_diff(repo: Path, base: str, head: str | None = None) -> CheckResult:
     """Check the change from base to head (None = the working tree).
 
-    The config comes from base, never from the change itself. A test file that doesn't parse
-    on either side is skipped and listed in errors: its tests are unknown, so they must not
-    be reported as removed.
+    The config and the declared Python versions come from base, never from the change itself.
+    A test file that doesn't parse on either side is skipped and listed in errors: its tests
+    are unknown, so they must not be reported as removed.
     """
     config = parse_config(read_text(repo, base, CONFIG_PATH))
     errors = list(config.errors)
@@ -64,6 +65,7 @@ def check_diff(repo: Path, base: str, head: str | None = None) -> CheckResult:
         lines=diff_lines(repo, base, head),
         messages=commit_messages(repo, base, head),
         config=config,
+        python2_dropped=python2_dropped(lambda path: read_text(repo, base, path)),
     )
     # A renamed file counts once, under its head path.
     paths = {f.path for f in head_files} | {f.path for f in base_files if f.path not in path_map}

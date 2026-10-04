@@ -21,6 +21,8 @@ def check(context: Context) -> Iterator[Finding]:
     for test in matching.removed:
         if test.is_empty:
             continue  # a placeholder that checked nothing; removing it weakens nothing
+        if context.python2_dropped and "py2-only" in test.markers:
+            continue  # skipped everywhere but Python 2, which the project no longer supports
         yield Finding(
             rule=ID,
             severity=RULE.severity,
