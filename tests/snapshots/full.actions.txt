@@ -1,4 +1,4 @@
-::error file=tests/test_refund.py,line=12,title=AW002 (block)::`test_refund` has 2 assertion(s), down from 3.%0ARestore the removed assertion(s) and fix the code so they pass.
-::warning file=tests/test_pay.py,line=40,title=AW004 (warn)::Assertion weakened in `test_total`: an equality check became a not-None check.%0ARestore the stricter assertion and fix the code so it passes.
+::error file=tests/test_refund.py,line=12,title=AW002 (block)::`test_refund` has 2 assertion(s), down from 3.%0ARestore the removed assertion(s) and fix the code so they pass.%0AAuthor: ai (commit 0123456789ab: Co-Authored-By: Claude <noreply@anthropic.com>)
+::warning file=tests/test_pay.py,line=40,title=AW004 (warn)::Assertion weakened in `test_total`: an equality check became a not-None check.%0ARestore the stricter assertion and fix the code so it passes.%0AAuthor: human (commit fedcba987654 by Dev <dev@example.com>, no AI signal); block lowered to warn by [routing]
 ::error file=tests/test_pay.py,line=7,title=AW000 (block)::Waiver proposed in this change (inline allow AW003); reason given: "flaky". It needs human approval.
 ::error title=AssertWatch could not check a file::tests/test_broken.py: SyntaxError: bad

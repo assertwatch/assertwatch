@@ -74,12 +74,21 @@ def run(payload_text: str, stdout: TextIO, stderr: TextIO) -> int:
 
     base = session.base if session is not None else None
     changed = repo.changed_paths(base) if base else None
+    recorded = changed is not None
     if changed is None:  # no recorded base, or it is gone
         base = _default_base(repo)
         changed = repo.changed_paths(base) if base else None
     if not changed or not any(is_test_path(p) or is_guard_path(p) for p in changed):
         return EXIT_OK
-    return _check(repo.top, base, session, bool(payload.get("stop_hook_active")), stdout, stderr)
+    return _check(
+        repo.top,
+        base,
+        session,
+        bool(payload.get("stop_hook_active")),
+        stdout,
+        stderr,
+        recorded=recorded,
+    )
 
 
 def _check(
@@ -89,13 +98,17 @@ def _check(
     stop_hook_active: bool,
     stdout: TextIO,
     stderr: TextIO,
+    *,
+    recorded: bool = False,
 ) -> int:
+    """Check base..working tree. recorded: base is this session's start, so the session (the
+    agent) made every change since; otherwise only uncommitted changes are known to be its."""
     from assertwatch.check import check_diff
     from assertwatch.gitdiff import GitError
     from assertwatch.report import Report, failing, plural, render
 
     try:
-        result = check_diff(repo, base, None)
+        result = check_diff(repo, base, None, hook=True, session=base if recorded else None)
     except GitError as exc:
         stderr.write(f"assertwatch hook: {exc}\n")
         return EXIT_ERROR

@@ -38,6 +38,12 @@ test_paths = []
 # rule = "AW001"
 # path = "tests/legacy/**"
 # reason = "legacy suite is being retired"
+
+# What a blocking finding becomes, by who made the change (ai | mixed | human | unknown).
+# Commit identities and trailers decide "human", and they can be forged: if agents commit
+# here without a reliable Co-Authored-By trailer, set human = "block".
+[routing]
+# human = "warn"
 """
 
 # (exit code, stdout, stderr) of a `gh` command; replaced in tests.
