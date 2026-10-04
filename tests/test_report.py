@@ -224,4 +224,4 @@ def test_cli_git_errors_exit_usage(repo, capsys):
 def test_cli_rules_lists_every_rule(capsys):
     assert main(["rules"]) == EXIT_OK
     out = capsys.readouterr().out
-    assert out.count("block") == 9 and "AW011  block  Assertion no longer checks anything" in out
+    assert out.count("block") == 10 and "AW011  block  Assertion no longer checks anything" in out

@@ -188,6 +188,7 @@ as removed.
 | AW003 | A new skip, skipif, xfail, skip call or early return |
 | AW004 | An assertion replaced by a weaker one (`==` to `is not None`, broad exceptions, wider tolerance) |
 | AW005 | An expected value rewritten (`== 10.05` to `== 10`, a parametrized expected value). Blocks when no production code changed; a warning when it did |
+| AW007 | A check wrapped so its failure is ignored: `try`/`except AssertionError` (or `Exception`, a bare `except`, `contextlib.suppress`) that neither re-raises nor fails; Java `catch (AssertionError \| Throwable \| Error ...)` |
 | AW008 | A test body emptied |
 | AW009 | Test config or the guard loosened (`--deselect`, lower `fail_under`, hook removed, ...) |
 | AW011 | An assertion that can never fail (`assert True`, `x == x`) |
@@ -197,7 +198,7 @@ as removed.
 small built-in tokenizer, so Java needs no extra install. JUnit 5 and 4 tests (`@Test`,
 `@ParameterizedTest`, `@RepeatedTest`, JUnit 3 `TestCase` methods) and JUnit, AssertJ,
 Hamcrest and Mockito `verify` checks (and JUnit 4's `@Test(expected = ...)`) get
-AW001-AW005, AW008 and AW011, like Python. A test that calls a helper method of its class (or
+AW001-AW005, AW007, AW008 and AW011, like Python. A test that calls a helper method of its class (or
 of an enclosing class) is credited with the helper's checks, as in Python. Skips:
 `@Disabled`, `@Ignore`, `@DisabledIf*`/`@EnabledIf*` and the other conditions, and
 `assumeTrue`-style calls. Parametrized cases are counted for `@ValueSource`, `@CsvSource`
@@ -236,13 +237,12 @@ suppress anything; they are reported as AW000 for a human to approve.
 `make eval` replays the labelled corpus in [`corpus/cases/`](corpus/cases): small, complete
 changes, each one a cheat that should be caught or a refactor that shouldn't be blocked. The
 refactors are modeled on real commits from open-source projects that earlier versions
-blocked. Results today: **70 of 76 cheats caught, 1 of 56 refactors blocked** (92% recall,
-2% false positives on refactors; 2 more refactors get a warning). That includes 30 Java
-cheats and 21 Java refactors, all handled.
+blocked. Results today: **76 of 81 cheats caught, 1 of 61 refactors blocked** (94% recall,
+2% false positives on refactors; 2 more refactors get a warning). That includes 32 Java
+cheats and 23 Java refactors, all handled.
 
-- **Missed:** a failing assertion wrapped in `try/except AssertionError: pass`, and the
-  function under test patched to return the expected value. Those are AW007 and AW006,
-  not built yet. Also a check for exactly two warnings swapped one-for-one for
+- **Missed:** the function under test patched to return the expected value (AW006, not
+  built yet). Also a check for exactly two warnings swapped one-for-one for
   `pytest.warns`, which passes on one: the count stays the same and nothing compares the two.
   And a property test whose Hypothesis input range was narrowed. And a test moved to a new
   file (or given a body import) that points at a stand-in for the code under test: a test

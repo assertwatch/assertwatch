@@ -35,7 +35,9 @@ def test_refund_rounding():
 
 def test_rule_registry_is_complete_and_unique():
     ids = [r.id for r in all_rules()]
-    assert ids == ["AW000", "AW001", "AW002", "AW003", "AW004", "AW005", "AW008", "AW009", "AW011"]
+    assert ids == [
+        "AW000", "AW001", "AW002", "AW003", "AW004", "AW005", "AW007", "AW008", "AW009", "AW011"
+    ]  # fmt: skip
     assert all(r.title and r.summary for r in all_rules())
 
 
@@ -1231,6 +1233,85 @@ def test_aw005_literal_replaced_by_an_interpolated_parameter_is_clean():
 def test_aw005_parametrized_change_warns_with_code_change():
     [found] = aw005(PARAM, PARAM.replace("(2, 2, 4)", "(2, 2, 5)"), lines=code_change())
     assert found.severity == Severity.WARN
+
+
+# --- AW007 ------------------------------------------------------------------------------
+
+TAX = """
+def test_tax():
+    assert total_with_tax(10.05, 0.2) == 12.06
+"""
+
+
+@pytest.mark.parametrize(
+    "after",
+    [
+        "try:\n        CHECK\n    except AssertionError:\n        pass",
+        "try:\n        CHECK\n    except:\n        pass",
+        "try:\n        CHECK\n    except (KeyError, Exception) as e:\n        log(e)",
+        "try:\n        CHECK\n    except BaseException:\n        return",
+        "try:\n        CHECK\n    except ValueError:\n        raise\n    except AssertionError:\n"
+        "        pass",
+        "with contextlib.suppress(AssertionError):\n        CHECK",
+        "with suppress(KeyError, Exception):\n        CHECK",
+        "try:\n        check_tax()\n    except AssertionError:\n        pass",
+        "try:\n        total = f()\n        assert total == 12\n    except AssertionError:\n"
+        "        total = 0",
+        "rate = 0.2\n    assert rate\n    try:\n        CHECK\n    except AssertionError:\n"
+        "        log(rate)",
+    ],
+    ids=[
+        "assertion-error", "bare", "exception-in-tuple", "base-exception-return",
+        "one-handler-swallows", "suppress", "suppress-exception", "helper-check",
+        "assigns-name-checked-inside", "reads-checked-name",
+    ],
+)  # fmt: skip
+def test_aw007_swallowed_check(after):
+    check = "assert total_with_tax(10.05, 0.2) == 12.06"
+    helper = "\ndef check_tax():\n    " + check + "\n"
+    body = after.replace("CHECK", check)
+    found = run(helper + TAX, helper + "\ndef test_tax():\n    " + body + "\n")
+    assert [f.rule for f in found] == ["AW007"]
+
+
+@pytest.mark.parametrize(
+    "after",
+    [
+        "try:\n        CHECK\n    except AssertionError as e:\n        raise ValueError() from e",
+        "try:\n        CHECK\n    except Exception as e:\n        pytest.fail(str(e))",
+        "try:\n        CHECK\n    except Exception as e:\n        self.fail(str(e))",
+        "try:\n        CHECK\n    except AssertionError:\n        assert retry()",
+        "try:\n        CHECK\n    except ValueError:\n        pass",
+        "try:\n        CHECK\n    except AssertionError:\n        pass\n    else:\n"
+        "        raise AssertionError('expected a failure')",
+        "try:\n        CHECK\n    finally:\n        cleanup()",
+        "with suppress(KeyError):\n        CHECK",
+        "try:\n        x = f()\n    except Exception:\n        pass\n    CHECK",
+        "failed = False\n    try:\n        CHECK\n    except AssertionError:\n"
+        "        failed = True\n    assert failed",
+        "with pytest.raises(AssertionError):\n        CHECK",
+        "with suppress(Exception):\n        x = f()\n    CHECK",
+    ],
+    ids=[
+        "reraised", "pytest-fail", "self-fail", "checked-again", "other-exception",
+        "else-fails", "finally-only", "suppress-other", "check-outside-try", "flag-checked",
+        "raises-assertion-error", "suppress-without-check",
+    ],
+)  # fmt: skip
+def test_aw007_quiet(after):
+    check = "assert total_with_tax(10.05, 0.2) == 12.06"
+    assert rules(TAX, "\ndef test_tax():\n    " + after.replace("CHECK", check) + "\n") == []
+
+
+def test_aw007_only_new_swallowing_counts():
+    swallowed = (
+        "def test_tax():\n    try:\n        assert f() == 1\n    except Exception:\n        pass\n"
+    )
+    renamed = swallowed.replace("test_tax", "test_tax_rounding")
+    assert rules(swallowed, swallowed + "    assert g() == 2\n") == []
+    assert rules(swallowed, renamed) == []
+    twice = swallowed + "    try:\n        assert g() == 2\n    except Exception:\n        pass\n"
+    assert rules(swallowed + "    assert g() == 2\n", twice) == ["AW007"]
 
 
 # --- AW008 ------------------------------------------------------------------------------

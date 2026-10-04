@@ -54,6 +54,10 @@ class TryBlock:
     handlers: tuple[str, ...]  # exception types caught; "" for a bare except
     wraps_assertion: bool  # the try body contains an assertion
     handler_is_noop: bool  # every handler body is only pass / ... / continue
+    # a handler catches assertion failures (AssertionError, Exception, Throwable, a bare
+    # except, contextlib.suppress) and neither re-raises nor fails, while nothing after the
+    # protected code fails the test in its place: a failing check in the body passes
+    swallows: bool = False
 
 
 @dataclass(frozen=True)

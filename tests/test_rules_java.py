@@ -520,3 +520,96 @@ class CartTest {
 }
 """
     assert "AW002" not in rules(after, HELPER_BASE)
+
+
+TOTAL = "        assertEquals(1.5, cart.total());\n"
+
+
+@pytest.mark.parametrize(
+    "handler",
+    [
+        "catch (AssertionError e) {}",
+        "catch (AssertionFailedError | IOException e) { log(e); }",
+        "catch (Throwable t) { t.printStackTrace(); }",
+        "catch (Error e) { }",
+        "catch (IllegalStateException e) { throw e; } catch (AssertionError e) { }",
+        "catch (AssertionError e) { failed = true; }",
+    ],
+)
+def test_aw007_swallowed_check(handler):
+    after = swap(TOTAL, "        try {\n    " + TOTAL + "        } " + handler + "\n")
+    assert rules(after) == ["AW007"]
+
+
+def test_aw007_swallowed_helper_check():
+    helpers = (
+        "class CartTest {\n"
+        "    private void checkTotal(Cart cart) { assertEquals(1.5, cart.total()); }\n"
+        "    private void load(Cart cart) { cart.reload(); }\n"
+    )
+    before = BASE.replace("class CartTest {\n", helpers)
+    swallowed = (
+        "        try {\n            checkTotal(cart);\n        } catch (AssertionError e) {}\n"
+    )
+    loaded = "        try {\n            load(cart);\n        } catch (AssertionError e) {}\n"
+    assert rules(before.replace(TOTAL, swallowed), before) == ["AW007"]
+    assert rules(before.replace(TOTAL, TOTAL + loaded), before) == []
+
+
+@pytest.mark.parametrize(
+    "after",
+    [
+        swap(TOTAL, "        try {\n    " + TOTAL + "        } catch (Exception e) {}\n"),
+        swap(
+            TOTAL, "        try {\n" + TOTAL + "        } catch (AssertionError e) { throw e; }\n"
+        ),
+        swap(
+            TOTAL,
+            "        try {\n" + TOTAL + "        } catch (AssertionError e) { fail(e); }\n",
+        ),
+        swap(
+            THROWS,
+            THROWS + "        try {\n            assertEquals(1, 2);\n"
+            "        } catch (AssertionError expected) {\n            return;\n        }\n"
+            '        fail("assertEquals(1, 2) passed");\n',
+        ),
+        swap(TOTAL, "        try {\n" + TOTAL + "        } finally { cart.clear(); }\n"),
+        swap(
+            THROWS,
+            THROWS + "        boolean failed = false;\n        try {\n"
+            "            assertEquals(1, 2);\n        } catch (AssertionError expected) {\n"
+            "            failed = true;\n        }\n        assertTrue(failed);\n",
+        ),
+        swap(
+            TOTAL,
+            TOTAL + "        try {\n            cart.load();\n        } catch (Throwable t) {}\n",
+        ),
+        swap(
+            THROWS,
+            THROWS + "        try {\n            assertEquals(1, 2);\n"
+            "        } catch (AssertionError expected) {\n        } finally {\n"
+            '            reset();\n        }\n        fail("assertEquals(1, 2) passed");\n',
+        ),
+        swap(
+            THROWS,
+            THROWS + "        try {\n            assertEquals(1, 2);\n"
+            "        } catch (AssertionError expected) {\n            return;\n        }\n"
+            '        throw new IllegalStateException("assertEquals(1, 2) passed");\n',
+        ),
+    ],
+    ids=[
+        "exception",
+        "rethrown",
+        "fails",
+        "expects-failure-after",
+        "finally",
+        "flag-checked",
+        "no-check-in-try",
+        "fail-after-finally",
+        "throw-after",
+    ],  # fmt: skip
+)
+def test_aw007_quiet(after):
+    # expects-failure-after also gets AW003: its `return` comes before a check, which the
+    # early-return rule reads as skipping it; a separate question from AW007
+    assert "AW007" not in rules(after)

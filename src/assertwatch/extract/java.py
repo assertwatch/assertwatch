@@ -728,7 +728,7 @@ def _scan_body(stmts: list[Token], case: TestCase, helpers: _Helpers, params: li
             i += 1
             continue
         if tok.text == "try" and i + 1 < len(stmts) and stmts[i + 1].text in ("{", "("):
-            case.try_blocks.append(_try_block(stmts, i))
+            case.try_blocks.append(_try_block(stmts, i, helpers))
         if (
             tok.text == "throw"
             and i + 2 < len(stmts)
@@ -993,7 +993,17 @@ def _statement_end(stmts: list[Token], i: int) -> int:
     return len(stmts)
 
 
-def _try_block(stmts: list[Token], i: int) -> TryBlock:
+# Catching one of these also catches a failed assertEquals, assertThat or fail()
+# (AssertionError and its subclasses); `Exception` doesn't.
+_FAILURE_CATCHERS = frozenset(
+    {
+        "AssertionError", "AssertionFailedError", "ComparisonFailure", "MultipleFailuresError",
+        "Error", "Throwable",
+    }
+)  # fmt: skip
+
+
+def _try_block(stmts: list[Token], i: int, helpers: _Helpers) -> TryBlock:
     j = i + 1
     if stmts[j].text == "(":  # try-with-resources
         j = _close(stmts, j) + 1
@@ -1003,17 +1013,77 @@ def _try_block(stmts: list[Token], i: int) -> TryBlock:
         and _call_name(stmts, k) is not None
         and _is_assert_call(_call_name(stmts, k)[0])  # type: ignore[index]
         or stmts[k].text == "assert"
+        or _checking_helper(stmts, k, helpers)
         for k in range(j + 1, body_end)
     )
     handlers: list[str] = []
     noop = True
+    swallows = False
     k = body_end + 1
     while k < len(stmts) and stmts[k].text == "catch":
         close = _close(stmts, k + 1)
         types = [t.text for t in stmts[k + 2 : close - 1] if t.kind == "id"]
         handlers.append(" | ".join(types))
         handler_end = _close(stmts, close + 1)
-        if any(t.text != ";" for t in stmts[close + 2 : handler_end]):
+        handler = stmts[close + 2 : handler_end]
+        if any(t.text != ";" for t in handler):
             noop = False
+        if (
+            any(t in _FAILURE_CATCHERS for t in types)
+            and not _fails(handler)
+            and not _flags(handler, stmts[handler_end + 1 :])
+        ):
+            swallows = True
         k = handler_end + 1
-    return TryBlock(stmts[i].line, tuple(handlers), wraps, noop and bool(handlers))
+    if k < len(stmts) and stmts[k].text == "finally":
+        k = _close(stmts, k + 1) + 1
+    # `try { assertX(bad); } catch (AssertionError e) { return; } fail(...)`: a test of the
+    # check itself, which expects it to fail
+    after = _call_name(stmts, k) if k < len(stmts) else None
+    expects_failure = (k < len(stmts) and stmts[k].text == "throw") or (
+        after is not None and after[0] == "fail"
+    )
+    swallows = swallows and wraps and not expects_failure
+    return TryBlock(stmts[i].line, tuple(handlers), wraps, noop and bool(handlers), swallows)
+
+
+def _checking_helper(stmts: list[Token], k: int, helpers: _Helpers) -> bool:
+    """A call at k to a helper of the class that makes checks."""
+    tok = stmts[k]
+    if tok.kind != "id" or tok.text not in helpers.defs or k + 1 >= len(stmts):
+        return False
+    if stmts[k + 1].text != "(" or (k and stmts[k - 1].text in ("new", "::")):
+        return False
+    types = tuple(None for _ in split_args(stmts[k + 2 : _close(stmts, k + 1)]))
+    return bool(helpers.call(tok.text, types, tok.line)[0])
+
+
+def _flags(handler: list[Token], rest: list[Token]) -> bool:
+    """`catch (AssertionError e) { failed = true; }` with `assertTrue(failed)` later: the
+    failure is the expected outcome and is checked."""
+    assigned = {
+        handler[k - 1].text
+        for k in range(1, len(handler))
+        if handler[k].text == "=" and handler[k - 1].kind == "id"
+    }
+    for k, tok in enumerate(rest):
+        if tok.kind == "id" and _is_assert_call(tok.text) and k + 1 < len(rest):
+            if rest[k + 1].text == "(":
+                args = rest[k + 2 : _close(rest, k + 1)]
+                if any(t.text in assigned for t in args):
+                    return True
+    return False
+
+
+def _fails(handler: list[Token]) -> bool:
+    """The catch block re-throws, checks something or fails the test on some path."""
+    return any(
+        t.text == "throw"
+        or (
+            t.kind == "id"
+            and _is_assert_call(t.text)
+            and k + 1 < len(handler)
+            and handler[k + 1].text == "("
+        )
+        for k, t in enumerate(handler)
+    )
