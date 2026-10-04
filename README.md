@@ -214,14 +214,13 @@ suppress anything; they are reported as AW000 for a human to approve.
 `make eval` replays the labelled corpus in [`corpus/cases/`](corpus/cases): small, complete
 changes, each one a cheat that should be caught or a refactor that shouldn't be blocked. The
 refactors are modeled on real commits from open-source projects that earlier versions
-blocked. Results today: **30 of 32 cheats caught, 1 of 24 refactors blocked** (94% recall,
-4% false positives on refactors; 1 more refactor gets a warning).
+blocked. Results today: **35 of 38 cheats caught, 0 of 31 refactors blocked** (92% recall,
+no false positives on refactors; 1 more refactor gets a warning).
 
 - **Missed:** a failing assertion wrapped in `try/except AssertionError: pass`, and the
   function under test patched to return the expected value. Those are AW007 and AW006,
-  not built yet.
-- **Blocked by mistake:** three asserts on a recorded warning replaced by one
-  `pytest.warns(DeprecationWarning, match=...)`. It reads as two assertions dropped.
+  not built yet. Also a check for exactly two warnings swapped one-for-one for
+  `pytest.warns`, which passes on one: the count stays the same and nothing compares the two.
 - **Warned:** an intended behavior change, where the code and the expected value change
   together (AW005 asks for confirmation).
 
@@ -232,18 +231,24 @@ suite fails when one starts passing, so the numbers here stay current.
 
 **On real history**, which nobody wrote for us: we ran the last 300 test-touching commits of
 six open-source Python projects (click, more-itertools, attrs, dateutil, markupsafe,
-itsdangerous; 1,318 commits). 189 of them (14%) get a finding: 136 a blocking one, 53 only a
+itsdangerous; 1,318 commits). 188 of them (14%) get a finding: 135 a blocking one, 53 only a
 warning that a value changed along with the code. We labelled a random 30 of the blocked
 commits by hand ([`corpus/real-history.md`](corpus/real-history.md)):
 
-- **Blocked rightly, about 6% of commits.** Mostly deliberate changes a reviewer should
+- **Blocked rightly, about 6.6% of commits.** Mostly deliberate changes a reviewer should
   approve: a feature removed with its tests, a platform skip, changed behavior. Four were
   real weakenings, including a lint autofix that turned a warning check into one that can
   never pass (the project fixed it later), and a test whose invalid input was swapped for a
   valid one.
-- **Blocked wrongly, about 4% of commits** (roughly 2-6%): tests rewritten past
-  recognition, checks made stricter in a form the rules don't compare, dead Python 2
-  branches. Labelling found four fixable patterns; they are fixed and in the corpus.
+- **Blocked wrongly, about 3.7% of commits** (roughly 2-6%): tests rewritten past
+  recognition, checks made stricter in a form the rules don't compare, Python 2 code removed
+  in the commit that drops Python 2. Labelling found five fixable patterns; they are fixed
+  and in the corpus.
+
+A test may lose assertions without checking less: a manual warning check replaced by
+`pytest.warns(..., match=...)`, `is not None` dropped next to an exact `== 10.5`, or Python 2
+branches removed once the project (as declared on the base branch) no longer supports it.
+Those aren't reported; anything AssertWatch can't prove is still guaranteed is.
 
 AW005 blocks a changed expected value only when no production code changed, because then the
 test was edited to agree with the code. A human correcting a wrong test value looks exactly

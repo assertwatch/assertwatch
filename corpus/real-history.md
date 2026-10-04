@@ -13,11 +13,14 @@ At commit 29d183d, 145 of them got a blocking finding. 30 were drawn at random
 - **weakening**: the test checks less than before and nothing replaced it. Blocking is right.
 - **false positive**: nothing was lost; AssertWatch misread a restructure.
 
-**Result.** 12 intended, 4 weakenings, 14 false positives. Four of those 14 were fixed after
-labelling (marked *fixed*), and the fixes removed 9 blocks across the full 1,318 (all
-refactors, checked) and added none. Now 136 commits block. 26 of the sample still do, and 10
-of those are false positives (95% interval about 22-58%), so about 4% of these test-touching
-commits are blocked wrongly (between roughly 2% and 6%), and about 6% are blocked rightly.
+**Result.** 12 intended, 4 weakenings, 14 false positives. Five of those 14 have been fixed
+since (marked *fixed*); the fixes removed 10 blocks across the full 1,318 (all refactors,
+checked) and added none. Now 135 commits block. 25 of the sample still do, and 9 of those
+are false positives (95% interval about 20-55%), so about 3.7% of these test-touching
+commits are blocked wrongly (between roughly 2% and 6%), and about 6.6% are blocked rightly.
+
+Dead Python 2 code is ignored only when the base declares no Python 2 support, so 2 stays
+blocked: that commit is the one that drops Python 2, and its base still declares it.
 
 | # | Project | Commit | Rule | Label | What happened |
 |---|---|---|---|---|---|
@@ -30,7 +33,7 @@ commits are blocked wrongly (between roughly 2% and 6%), and about 6% are blocke
 | 7 | click | `2ba2fe0cf8` | AW002 | weakening | Five exact checks replaced by one assertion in a loop that passes if no line matches |
 | 8 | more-itertools | `45b6bf81e1` | AW001 | intended | `derangements_by_value` removed with its tests |
 | 9 | click | `2fa500c143` | AW005 | weakening | Tests-only change: the invalid-bytes filename input replaced by an already-decoded string |
-| 10 | click | `44ce9b8e4c` | AW002 | false positive | `Path(a) == Path(b)` rewritten as a plain string comparison |
+| 10 | click | `44ce9b8e4c` | AW002 | false positive, *fixed* | `Path(a) == Path(b)` dropped next to the plain `a == b` it follows from |
 | 11 | click | `955ca492a6` | AW001 | false positive | Two tests merged into one parametrized test with a new name and more cases |
 | 12 | more-itertools | `e39ae39c0a` | AW001 | intended | `distinct_derangements` removed; the remaining tests consolidated |
 | 13 | dateutil | `7b242e2874` | AW004 | intended | Warning type changed to a specific class, message match dropped, code changed with it |
@@ -54,7 +57,7 @@ commits are blocked wrongly (between roughly 2% and 6%), and about 6% are blocke
 
 **What the remaining false positives have in common:** a test rewritten so much that
 nothing ties it to the old one (11, 25, 30), a check made stricter in a form the rules don't
-compare (10, 19), dead version branches (2), equality tests checking reflexivity (14, 26), an
+compare (19), dead Python 2 branches removed in the commit that drops Python 2 (2), equality tests checking reflexivity (14, 26), an
 xfail case that started passing (20), and a unittest-to-pytest conversion that moved
 assertions into new skipped tests (22). Each is a block a reviewer clears in seconds, but it
 is still a block.
