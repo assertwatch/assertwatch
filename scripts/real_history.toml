@@ -1,6 +1,7 @@
-# The six projects of the real-history replay (corpus/real-history.md), pinned so every run
-# checks the same 1,318 commits: the last `commits` non-merge commits touching *test*.py,
-# walking back from `head`.
+# The projects of the real-history replay (corpus/real-history.md), pinned so every run
+# checks the same commits: the last `commits` non-merge commits touching test files
+# (*test*.py, or *Test*.java and *IT.java for lang = "java"), walking back from `head`.
+# Python: six projects, 1,318 commits. Java: three projects, 900 commits.
 
 commits = 300
 
@@ -33,3 +34,21 @@ head = "b2e4d9c7687be25695fffbe93a37622302b24fb1"
 name = "itsdangerous"
 url = "https://github.com/pallets/itsdangerous.git"
 head = "672971d66a2ef9f85151e53283113f33d642dabd"
+
+[[repo]]
+name = "commons-lang"
+lang = "java"
+url = "https://github.com/apache/commons-lang.git"
+head = "25c4bfcd6d9dc3a7333088bfc3031b05cd93837e"
+
+[[repo]]
+name = "jsoup"
+lang = "java"
+url = "https://github.com/jhy/jsoup.git"
+head = "088614f4a1454232a1f03c63b7f80742f1f2a854"
+
+[[repo]]
+name = "jackson-core"
+lang = "java"
+url = "https://github.com/FasterXML/jackson-core.git"
+head = "c23a2a621584cbf0fd193d9023c2cb5f1009e7d6"

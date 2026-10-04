@@ -200,8 +200,11 @@ Hamcrest and Mockito `verify` checks get AW001-AW005, AW008 and AW011, like Pyth
 `@Disabled`, `@Ignore`, `@DisabledIf*`/`@EnabledIf*` and the other conditions, and
 `assumeTrue`-style calls. Parametrized cases are counted for `@ValueSource`, `@CsvSource`
 (including text blocks) and `@NullSource`/`@EmptySource`. Not yet: Maven and Gradle config
-(AW009), and a replay of real Java projects' history; the Java corpus cases are written for
-the purpose, not yet modeled on real commits. Only what JUnit runs counts as a test: a test
+(AW009); most Java corpus cases are written for the purpose, not modeled on real commits.
+On the last 300 test-touching commits of commons-lang, jsoup and jackson-core (900), 62
+block; labelling a sample puts about 4.3% of commits blocked wrongly (Python: about 2.6%),
+mostly checks moved into helpers and tests moved between files
+([`corpus/real-history.md`](corpus/real-history.md#java)). Only what JUnit runs counts as a test: a test
 made private, static or non-void, moved into an inner class without `@Nested`, or into a
 top-level class whose name Surefire doesn't select, looks removed. Unicode escapes
 (`\u0022`) are translated first, as javac does, so they can't hide code in a string.
@@ -231,9 +234,9 @@ suppress anything; they are reported as AW000 for a human to approve.
 `make eval` replays the labelled corpus in [`corpus/cases/`](corpus/cases): small, complete
 changes, each one a cheat that should be caught or a refactor that shouldn't be blocked. The
 refactors are modeled on real commits from open-source projects that earlier versions
-blocked. Results today: **60 of 66 cheats caught, 1 of 45 refactors blocked** (91% recall,
-2% false positives on refactors; 2 more refactors get a warning). That includes 20 Java
-cheats and 10 Java refactors, all handled.
+blocked. Results today: **62 of 68 cheats caught, 1 of 47 refactors blocked** (91% recall,
+2% false positives on refactors; 2 more refactors get a warning). That includes 22 Java
+cheats and 12 Java refactors, all handled.
 
 - **Missed:** a failing assertion wrapped in `try/except AssertionError: pass`, and the
   function under test patched to return the expected value. Those are AW007 and AW006,

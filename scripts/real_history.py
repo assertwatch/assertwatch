@@ -1,7 +1,8 @@
-"""Replay the real-history sample: check every pinned commit of six projects as sha^..sha.
+"""Replay the real-history sample: check every pinned commit of the projects as sha^..sha.
 
     python scripts/real_history.py out.json                 # clone (once) and replay
     python scripts/real_history.py out.json --before old.json  # also list what changed
+    python scripts/real_history.py out.json --lang java     # only the Java projects
 
 Clones go to .cache/real-history/ (gitignored) and are reused. The projects and the commit
 each walk starts from are pinned in real_history.toml, so a fresh checkout replays the
@@ -22,6 +23,8 @@ from assertwatch.check import check_diff
 ROOT = Path(__file__).resolve().parent.parent
 PINNED = Path(__file__).with_name("real_history.toml")
 CACHE = ROOT / ".cache" / "real-history"
+# Which commits a project's walk picks: those touching its test files.
+TEST_PATHS = {"python": ("*test*.py",), "java": ("*Test*.java", "*IT.java")}
 
 
 def git(repo: Path, *args: str) -> str:
@@ -47,7 +50,7 @@ def clone(name: str, url: str, head: str) -> Path:
     return repo
 
 
-def commits(repo: Path, head: str, count: int) -> list[str]:
+def commits(repo: Path, head: str, count: int, lang: str) -> list[str]:
     out = git(
         repo,
         "log",
@@ -58,18 +61,22 @@ def commits(repo: Path, head: str, count: int) -> list[str]:
         str(count),
         head,
         "--",
-        "*test*.py",
+        *TEST_PATHS[lang],
     )
     return out.split()
 
 
-def replay() -> tuple[int, list[dict]]:
+def replay(only: str | None) -> tuple[dict[str, int], list[dict]]:
     pinned = tomllib.loads(PINNED.read_text())
-    total, flagged = 0, []
+    totals: dict[str, int] = {}
+    flagged = []
     for entry in pinned["repo"]:
+        lang = entry.get("lang", "python")
+        if only and lang != only:
+            continue
         repo = clone(entry["name"], entry["url"], entry["head"])
-        shas = commits(repo, entry["head"], pinned["commits"])
-        total += len(shas)
+        shas = commits(repo, entry["head"], pinned["commits"], lang)
+        totals[lang] = totals.get(lang, 0) + len(shas)
         for sha in shas:
             try:
                 result = check_diff(repo, f"{sha}^", sha)
@@ -84,12 +91,13 @@ def replay() -> tuple[int, list[dict]]:
                 flagged.append(
                     dict(
                         repo=entry["name"],
+                        lang=lang,
                         sha=sha,
                         block=any(f["sev"] == "block" for f in findings),
                         findings=findings,
                     )
                 )
-    return total, flagged
+    return totals, flagged
 
 
 def compare(before: list[dict], after: list[dict]) -> None:
@@ -109,11 +117,14 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("out", type=Path, help="where to write the flagged commits (JSON)")
     parser.add_argument("--before", type=Path, help="an earlier run to compare with")
+    parser.add_argument("--lang", choices=sorted(TEST_PATHS), help="replay only these projects")
     args = parser.parse_args()
-    total, flagged = replay()
+    totals, flagged = replay(args.lang)
     args.out.write_text(json.dumps(flagged, indent=1) + "\n")
-    blocking = sum(o["block"] for o in flagged)
-    print(f"{total} commits, {len(flagged)} flagged, {blocking} blocking")
+    for lang, total in totals.items():
+        mine = [o for o in flagged if o["lang"] == lang]
+        blocking = sum(o["block"] for o in mine)
+        print(f"{lang}: {total} commits, {len(mine)} flagged, {blocking} blocking")
     if args.before:
         before = json.loads(args.before.read_text())
         print(f"before: {sum(o['block'] for o in before)} blocking")

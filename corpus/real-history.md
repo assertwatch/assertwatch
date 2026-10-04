@@ -165,3 +165,77 @@ ignoring `from x import y` and aliased imports in the body. Replay: still 133 bl
 and stays known: a test that keeps its name when moved is paired as a move and its imports
 aren't compared, so a body or module import of a stand-in goes unnoticed (`cheat-45`,
 `cheat-46`).
+
+## Java
+
+**Method.** The last 300 non-merge commits touching `*Test*.java` or `*IT.java` in
+commons-lang, jsoup and jackson-core (900 commits), pinned in `scripts/real_history.toml`
+(`lang = "java"`; `python scripts/real_history.py out.json --lang java`), each checked as
+`sha^..sha`. At commit 6a24b31, 59 blocked and 6 jsoup commits crashed the check (see below).
+30 of the 59 were drawn at random (`random.seed(20261004)`) and labelled like the Python
+samples.
+
+**Result.** 6 intended, 2 weakenings, 22 false positives: Java blocks wrongly far more often
+than Python (14 of 30 in the first Python sample). Three of the 22 are fixed (*fixed*).
+
+| # | Project | Commit | Rule | Label | What happened |
+|---|---|---|---|---|---|
+| 1 | jackson-core | `3155455f2f` | AW001 | false positive | `@Test` dropped and the class made to extend `BaseTest`, a JUnit 3 `TestCase`: the `test*` methods still run |
+| 2 | commons-lang | `8bb9dfccb4` | AW002 | false positive | Six `assertNull` calls became one `@ParameterizedTest` with nine values |
+| 3 | jsoup | `bf13b496cd` | AW005 | false positive | Tests-only: an attribute added to the input and to the expected output |
+| 4 | jackson-core | `797d509fe0` | AW002 | false positive | Checks moved into a private helper of the test class |
+| 5 | jackson-core | `ff20a92732` | AW002 | false positive | Checks moved into a helper (`_verifyOneClosedOutput`), which also checks the close count |
+| 6 | jackson-core | `6c7daa05dd` | AW001 | false positive | JUnit 4 to 5: `testFoo` renamed `foo`, `@Parameterized` runner became `@MethodSource` |
+| 7 | jsoup | `582aaa0d72` | AW002 | intended | Attribute matching stops trimming values; the expected matches change with the code |
+| 8 | jackson-core | `327d2ff128` | AW002 | intended | A `@JacksonTestFailureExpected` test fixed; expected output changed with the code |
+| 9 | jsoup | `bbb56af691` | AW002 | false positive, *fixed* | try/catch with a `threw` flag became `X ex = assertThrows(...)` (an assigned check wasn't counted), parametrized over two queries |
+| 10 | jsoup | `b5761608fc` | AW002 | intended | `isNode` replaced by `nameIs` in the code; two checks of the old API become one |
+| 11 | jsoup | `9b455ae355` | AW002 | weakening | Timeout tests: the upper bound on the elapsed time dropped (deliberate, against flakiness) |
+| 12 | commons-lang | `fa2470369b` | AW001 | intended | A bad cached hash is now recomputed instead of rejected; the test changes with it |
+| 13 | jsoup | `209151fddc` | AW001 | false positive | Test moved to the new `NamespaceBindingsTest` and rewritten for the extracted class |
+| 14 | jackson-core | `11e3bd7c0a` | AW011 | false positive | `assertTrue(unk.equals(unk))` became `assertEquals(unk, unk)`: the same reflexivity check |
+| 15 | jsoup | `e975f4f508` | AW001 | false positive | Network test rewritten as a unit test in another file |
+| 16 | jsoup | `7707efccde` | AW001 | intended | `TokenQueue.addFirst` now throws; its test goes |
+| 17 | jackson-core | `b2c1e70ede` | AW002 | false positive | Loop body moved into a private helper |
+| 18 | jackson-core | `3dcca23cf4` | AW009 | false positive | `continue-on-error` on a step that downloads a coverage report, not one that runs tests |
+| 19 | jsoup | `7e9160110f` | AW002 | false positive | Several structural checks replaced by one exact comparison of the whole parse tree |
+| 20 | commons-lang | `a593c2f5c1` | AW002 | false positive | A timing check replaced by a Mockito `mocked.verify(...)` of the call |
+| 21 | jackson-core | `55261befb1` | AW001 | false positive | Renamed `looksLikeValidNumberTrue` with more cases |
+| 22 | jsoup | `f9f34df1a1` | AW003 | intended | Slow fuzz integration tests `@Disabled`, to run by hand |
+| 23 | jsoup | `e0019ebf33` | AW004 | false positive, *fixed* | `assertThrows(...)` became `X e = assertThrows(...)` plus a message check |
+| 24 | jsoup | `af7999df52` | AW001 | false positive | Test moved to `QuietAppendableTest` under the same name, with more checks |
+| 25 | jackson-core | `67f2d5fea8` | AW001 | false positive | Test file replaced by a larger one covering the same failure |
+| 26 | jsoup | `c778c3aea7` | AW005 | weakening | Progress-count tolerance widened from 1.25 to 1.5 (deliberate, against flakiness) |
+| 27 | jsoup | `c1d1945a97` | AW001 | false positive | A test that was already `@Disabled` removed: nothing that ran is lost |
+| 28 | jsoup | `9d2241ff46` | AW002 | false positive, *fixed* | try/catch with a `threw` flag became an assigned `assertThrows`; message changed with the code |
+| 29 | jsoup | `05f08bb64d` | AW011 | false positive | A class-name string check became `assertInstanceOf(X.class, ...)`, read as a presence check |
+| 30 | commons-lang | `8a28feb133` | AW011 | false positive | `assertTrue(sb1.equals(sb1))` became `assertEquals(sb1, sb1)` (as 14) |
+
+**Fixed with this sample.** A check whose result is kept (`X e = assertThrows(...)`,
+`e = ...`) counted as nothing: besides the false positives, broadening it
+(`Exception e = assertThrows(Exception.class, ...)`) went unseen (`cheat-j22`,
+`refactor-j12`). A `😀` escape pair was translated into two lone surrogates that
+crashed the check (`refactor-j11`), and duplicate detection read Java bodies as Python, so
+`'a'` (a char) and `"a"` (a String) matched (`cheat-j21`).
+
+**Replay after the fixes:** 59 -> 62 blocking. Cleared: #9, #23, #28 and `63ed60b84c` (the
+same try/catch rewrite, checked). Newly blocked, all labelled right: the six commits that
+crashed (jsoup `be8c37562c` CDATA parsing changed, `9d15c00daf` old network tests removed,
+`959994d5c4` deprecated option's test removed, `0ef4b70b2a` and `92f1aca552` tag-name parsing
+changed, `ccd90e9cfc` `containsIgnoreCase` removed, all intended) and `9851ac5d9c`, a
+**weakening**: an `X e = assertThrows(...)` replaced by a try/catch that passes whether or not
+it throws.
+
+**Rate.** 27 of the sample still block, 19 of them false positives; they stand for the 28
+unsampled commits that still block. That is about 39 commits blocked wrongly, **about 4.3% of
+the 900** (roughly 3.7-4.7%), and about 2.6% blocked rightly. Python is at about 2.6% wrong.
+
+**Fixable patterns, by count:** checks moved into a helper of the test class (4, 5, 17; Python
+already credits same-file helpers), a reflexive `equals` check rewritten as `assertEquals(a, a)`
+(14, 30), JUnit 4 to 5 renames dropping the `test` prefix (6) and JUnit 3 tests through an
+inherited `TestCase` (1), a test made parametrized with more values (2), a removed test that
+was already disabled (27), `assertInstanceOf` read as a presence check (29), Mockito
+`mocked.verify` not counted (20), and AW009 flagging `continue-on-error` on a step that runs no
+tests (18). **Not fixable without understanding the code:** tests moved to another file and
+rewritten (13, 15, 24, 25), a stricter check in another form (19), a rename with new cases
+(21), and an input and its expected output extended together (3).

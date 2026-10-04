@@ -313,3 +313,32 @@ def test_lost_checks_are_not_read_as_implied_python():
     before = BASE.replace("assertTrue(Cart.valid(n));", "assert n == 5;\n        assert n > 0;")
     after = BASE.replace("assertTrue(Cart.valid(n));", "assert n == 5;")
     assert rules(after, before) == ["AW002"]
+
+
+@pytest.mark.parametrize("escape", ["\\uD83D\\uDE00", "\\uD83D"])
+def test_surrogate_escapes_in_a_removed_test(escape):
+    # jsoup's emoji tests: a removed test with a surrogate escape once crashed the check.
+    gone = f"""
+    @Test
+    void emoji() {{
+        assertEquals("{escape}", Text.of("x"));
+    }}
+"""
+    before = BASE.replace("\n}\n", gone + "}\n")
+    assert rules(BASE, before) == ["AW001"]
+
+
+def test_a_removed_test_is_no_copy_of_one_that_differs_only_in_quotes():
+    # 'a' is a char and "a" a String: different checks, though Python would read them alike.
+    def check(name, literal):
+        return f"""
+    @Test
+    void {name}() {{
+        assertEquals({literal}, Text.first("abc"));
+    }}
+"""
+
+    both = check("firstIsA", '"a"') + check("firstCharIsA", "'a'")
+    before = BASE.replace("\n}\n", both + "}\n")
+    after = BASE.replace("\n}\n", check("firstCharIsA", "'a'") + "}\n")
+    assert rules(after, before) == ["AW001"]

@@ -80,6 +80,7 @@ _TOKEN = re.compile(
 
 
 _HEX = frozenset("0123456789abcdefABCDEF")
+_SURROGATES = re.compile("[\ud800-\udbff][\udc00-\udfff]|[\ud800-\udfff]")
 
 
 def unicode_escapes(source: str) -> str:
@@ -89,6 +90,9 @@ def unicode_escapes(source: str) -> str:
     one long string to javac. A backslash starts an escape only after an even number of
     backslashes, and a translated backslash never starts another escape (JLS 3.3). One pass
     over the text: no regular expression to backtrack on long runs of backslashes.
+
+    A `\\uD83D\\uDE00` pair becomes the one character javac reads; a lone surrogate stays as
+    its escape text, so the result can be encoded and two different lone ones still differ.
     """
     if "\\u" not in source:
         return source
@@ -114,7 +118,14 @@ def unicode_escapes(source: str) -> str:
         else:
             out.append("\\" * slashes)
             i = run
-    return "".join(out)
+    return _SURROGATES.sub(_surrogate, "".join(out))
+
+
+def _surrogate(match: re.Match[str]) -> str:
+    text = match.group()
+    if len(text) == 2:
+        return text.encode("utf-16-le", "surrogatepass").decode("utf-16-le")
+    return f"\\u{ord(text):04X}"
 
 
 def tokenize(source: str) -> list[Token]:
@@ -527,15 +538,18 @@ def _scan_body(stmts: list[Token], case: TestCase) -> None:
             case.assertions.append(_assertion("assert", "", stmts[i:stop], tok.line))
             i = stop
             continue
+        start = i
         call = _call_name(stmts, i)
+        if call is None and (value := _assigned_value(stmts, i)) is not None:
+            start, call = value, _call_name(stmts, value)  # `X e = assertThrows(...)`
         if call is not None:
             name, at = call
-            stop = _statement_end(stmts, i)
+            stop = _statement_end(stmts, start)
             if name in _SKIP_CALLS:
-                case.skip_calls.append(join(stmts[i : at + 1]))
+                case.skip_calls.append(join(stmts[start : at + 1]))
             elif _is_assert_call(name):
                 kind = "raises" if name in _RAISES_CALLS else "call"
-                case.assertions.append(_assertion(kind, name, stmts[i:stop], tok.line))
+                case.assertions.append(_assertion(kind, name, stmts[start:stop], tok.line))
                 i = stop
                 continue
         i += 1
@@ -664,6 +678,20 @@ def _is_assert_call(name: str) -> bool:
 
 def _statement_start(stmts: list[Token], i: int) -> bool:
     return i == 0 or stmts[i - 1].text in (";", "{", "}", ")", "->", "else", ":")
+
+
+def _assigned_value(stmts: list[Token], i: int) -> int | None:
+    """Where the value starts in a declaration or assignment at i (`final Ex e = `,
+    `Map<K, V> m = `, `this.e = `); None for any other statement."""
+    for k in range(i, len(stmts)):
+        text = stmts[k].text
+        if text == "=":
+            return k + 1 if k > i and stmts[k - 1].kind == "id" else None
+        if not (
+            stmts[k].kind == "id" or text in (".", "<", ">", ">>", ">>>", ",", "?", "[", "]", "&")
+        ):
+            return None
+    return None
 
 
 def _call_name(stmts: list[Token], i: int) -> tuple[str, int] | None:
