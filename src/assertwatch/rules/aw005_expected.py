@@ -24,7 +24,7 @@ from pathlib import PurePosixPath
 from assertwatch.extract.python import dotted
 from assertwatch.model import Assertion, Finding, ParamCase, Severity
 from assertwatch.paths import is_guard_path, is_test_path
-from assertwatch.rules import Context, Rule
+from assertwatch.rules import Context, Rule, java_checks
 from assertwatch.rules.aw004_weakened import changed
 from assertwatch.rules.matching import Pair
 
@@ -187,6 +187,8 @@ def _literal_change(before: Shape, after: Shape) -> bool:
 
 def _shape(assertion: Assertion) -> tuple[str, list[object]] | None:
     """The assertion with its literals blanked, and the literals in order; None if none."""
+    if assertion.lang == "java":
+        return java_checks.shape(assertion.text)
     try:
         if assertion.kind == "assert":
             stmt = ast.parse(assertion.text).body[0]

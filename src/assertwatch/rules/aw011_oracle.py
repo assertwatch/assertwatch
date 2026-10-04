@@ -20,7 +20,7 @@ from typing import Any
 
 from assertwatch.extract.python import dotted
 from assertwatch.model import Assertion, Finding, Severity
-from assertwatch.rules import Context, Rule
+from assertwatch.rules import Context, Rule, java_checks
 from assertwatch.rules.aw004_weakened import changed, check_pair, classify, is_literal
 from assertwatch.rules.matching import Pair
 
@@ -54,6 +54,8 @@ SWAPPED = "swapped"  # can't fail, but has legitimate uses (x == x, == ANY)
 
 def tautology(assertion: Assertion) -> str | None:
     """ALWAYS or SWAPPED if the assertion can never fail, else None."""
+    if assertion.lang == "java":
+        return java_checks.tautology(assertion.text)
     try:
         if assertion.kind == "assert":
             stmt = ast.parse(assertion.text).body[0]

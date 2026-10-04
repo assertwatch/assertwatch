@@ -6,7 +6,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from assertwatch.config import CONFIG_PATH, Config, parse_config, path_matches
-from assertwatch.extract.python import extract
+from assertwatch.extract import java, python
 from assertwatch.gitdiff import (
     ChangedFile,
     changed_files,
@@ -103,4 +103,7 @@ def _load(repo: Path, ref: str | None, path: str | None, config: Config) -> Test
     if config.test_paths and not path_matches(path, config.test_paths):
         return None
     source = read_text(repo, ref, path)
-    return None if source is None else extract(source, path)
+    if source is None:
+        return None
+    extract = java.extract if path.endswith(".java") else python.extract
+    return extract(source, path)

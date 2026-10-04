@@ -1,0 +1,544 @@
+"""Java test extractor: JUnit 5 (and JUnit 4) tests with JUnit, AssertJ and Hamcrest checks.
+
+A small hand-written tokenizer, not a Java parser: test code needs only tokens and brace
+structure (classes, annotated methods, call statements), and it keeps the core free of
+dependencies. Anything it can't make sense of (an unterminated string, unbalanced braces)
+makes the whole file a parse error, so its tests are unknown rather than removed.
+"""
+
+from __future__ import annotations
+
+import re
+from collections.abc import Iterator
+from dataclasses import dataclass
+
+from assertwatch.model import Assertion, ParamCase, TestCase, TestFile, TryBlock
+
+# Annotations that make a method a test.
+_TEST_ANNOTATIONS = frozenset(
+    {"Test", "ParameterizedTest", "RepeatedTest", "TestFactory", "TestTemplate"}
+)
+_SKIP_ANNOTATIONS = frozenset({"Disabled", "Ignore"})
+_CONDITION = re.compile(r"(Disabled|Enabled)(If|On|For)\w*")
+# Statement-level calls that end a test early without failing it.
+_SKIP_CALLS = frozenset({"assumeTrue", "assumeFalse", "assumeThat", "assumingThat", "abort"})
+_RAISES_CALLS = frozenset({"assertThrows", "assertThrowsExactly", "assertThatThrownBy"})
+_ASSERT_QUALIFIERS = frozenset(
+    {"Assertions", "Assert", "Assumptions", "Assume", "MatcherAssert", "Mockito", "BDDAssertions"}
+)
+_KEYWORDS = frozenset(
+    {
+        "if", "else", "for", "while", "do", "switch", "case", "default", "try", "catch",
+        "finally", "return", "throw", "new", "synchronized", "this", "super", "assert",
+        "yield", "break", "continue",
+    }
+)  # fmt: skip
+_TYPE_KEYWORDS = frozenset({"class", "interface", "enum", "record"})
+_MODIFIERS = frozenset(
+    {"public", "protected", "private", "static", "final", "abstract", "sealed", "strictfp",
+     "default", "synchronized", "native", "transient", "volatile"}
+)  # fmt: skip
+_SOURCES_UNCOUNTABLE = frozenset(
+    {"MethodSource", "CsvFileSource", "ArgumentsSource", "FieldSource", "EnumSource"}
+)
+
+
+@dataclass(frozen=True)
+class Token:
+    kind: str  # "id", "num", "str", "char", "op"
+    text: str
+    line: int
+
+
+class JavaSyntaxError(Exception):
+    pass
+
+
+# --- tokens -----------------------------------------------------------------------------
+
+_TOKEN = re.compile(
+    r"""
+    (?P<ws>\s+)
+  | (?P<line_comment>//[^\n]*)
+  | (?P<block_comment>/\*.*?\*/)
+  | (?P<text_block>\"\"\"[ \t\f]*\n(?:[^\\]|\\.)*?\"\"\")
+  | (?P<str>"(?:[^"\\\n]|\\.)*")
+  | (?P<char>'(?:[^'\\\n]|\\.)+')
+  | (?P<num>0[xX][\da-fA-F_]+[lL]?|(?:\d[\d_]*\.?[\d_]*|\.\d[\d_]*)(?:[eE][+-]?\d+)?[fFdDlL]?)
+  | (?P<id>[A-Za-z_$][\w$]*)
+  | (?P<op>->|::|\.\.\.|==|!=|<=|>=|&&|\|\||\+\+|--|[+\-*/%&|^]=|<<=?
+          |[{}()\[\];,.@=<>!~?:&|+\-*/^%])
+    """,
+    re.VERBOSE | re.DOTALL,
+)
+
+
+def tokenize(source: str) -> list[Token]:
+    tokens: list[Token] = []
+    pos, line = 0, 1
+    while pos < len(source):
+        match = _TOKEN.match(source, pos)
+        if match is None:
+            raise JavaSyntaxError(f"unexpected {source[pos]!r} on line {line}")
+        kind, text = match.lastgroup or "", match.group()
+        if kind in ("text_block", "str"):
+            tokens.append(Token("str", text, line))
+        elif kind in ("char", "num", "id", "op"):
+            tokens.append(Token(kind, text, line))
+        line += text.count("\n")
+        pos = match.end()
+    return tokens
+
+
+_OPEN = {"(": ")", "{": "}", "[": "]"}
+_NO_SPACE_BEFORE = frozenset({")", "]", ",", ".", ";", "::"})
+_NO_SPACE_AFTER = frozenset({"(", "[", ".", "@", "::", "!"})
+
+
+def join(tokens: list[Token]) -> str:
+    """Normalized source text: the same for any formatting of the same tokens."""
+    out: list[str] = []
+    for i, tok in enumerate(tokens):
+        prev = tokens[i - 1] if i else None
+        call = (
+            tok.text in ("(", "[")
+            and prev is not None
+            and (prev.kind == "id" or prev.text in (")", "]", ">"))
+        )
+        if (
+            prev
+            and not call
+            and tok.text not in _NO_SPACE_BEFORE
+            and (prev.text not in _NO_SPACE_AFTER)
+        ):
+            out.append(" ")
+        out.append(tok.text)
+    return "".join(out)
+
+
+def _close(tokens: list[Token], start: int) -> int:
+    """Index of the bracket that closes tokens[start]."""
+    depth: list[str] = []
+    for i in range(start, len(tokens)):
+        text = tokens[i].text
+        if tokens[i].kind == "op" and text in _OPEN:
+            depth.append(_OPEN[text])
+        elif tokens[i].kind == "op" and text in (")", "}", "]"):
+            if not depth or depth.pop() != text:
+                raise JavaSyntaxError(f"unbalanced {text!r} on line {tokens[i].line}")
+            if not depth:
+                return i
+    raise JavaSyntaxError(f"unclosed {tokens[start].text!r} on line {tokens[start].line}")
+
+
+# --- structure --------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class _Annotation:
+    name: str  # last part: "Test" for @org.junit.jupiter.api.Test
+    args: list[Token]  # inside the parentheses, if any
+
+
+def _annotation(tokens: list[Token], i: int) -> tuple[_Annotation, int]:
+    """Parse the annotation starting at tokens[i] == '@'; return it and the next index."""
+    j = i + 1
+    name = tokens[j].text
+    while j + 2 < len(tokens) and tokens[j + 1].text == "." and tokens[j + 2].kind == "id":
+        j += 2
+        name = tokens[j].text
+    j += 1
+    args: list[Token] = []
+    if j < len(tokens) and tokens[j].text == "(":
+        end = _close(tokens, j)
+        args = tokens[j + 1 : end]
+        j = end + 1
+    return _Annotation(name, args), j
+
+
+def extract(source: str, path: str) -> TestFile:
+    """Tokenize source and return the tests JUnit would run from it."""
+    try:
+        tokens = tokenize(source)
+        result = TestFile(path=path, imports=_imports(tokens))
+        result.tests = list(_members(tokens, 0, len(tokens), path, (), frozenset(), False))
+    except (JavaSyntaxError, IndexError) as exc:
+        return TestFile(path=path, parse_error=f"SyntaxError: {exc}")
+    return result
+
+
+def _imports(tokens: list[Token]) -> frozenset[str]:
+    found = set()
+    for i, tok in enumerate(tokens):
+        if tok.text == "import" and (i == 0 or tokens[i - 1].text in (";", "}")):
+            j = i + 1
+            if tokens[j].text == "static":
+                j += 1
+            end = next(k for k in range(j, len(tokens)) if tokens[k].text == ";")
+            found.add("".join(t.text for t in tokens[j:end]).removesuffix(".*"))
+    return frozenset(found)
+
+
+def _members(
+    tokens: list[Token],
+    start: int,
+    end: int,
+    path: str,
+    classes: tuple[str, ...],
+    inherited: frozenset[str],
+    junit3: bool,
+) -> Iterator[TestCase]:
+    """Tests declared between start and end: a file's top level or a class body."""
+    annotations: list[_Annotation] = []
+    i = start
+    while i < end:
+        tok = tokens[i]
+        if tok.text == "@" and i + 1 < end and tokens[i + 1].text != "interface":
+            annotation, i = _annotation(tokens, i)
+            annotations.append(annotation)
+            continue
+        if tok.text in _MODIFIERS:  # keep the annotations for the class or method that follows
+            i += 1
+            continue
+        if tok.text in _TYPE_KEYWORDS and tok.kind == "id" and i + 1 < end:
+            name = tokens[i + 1].text
+            body = next(k for k in range(i, end) if tokens[k].text == "{")
+            if tok.text == "record":  # skip the record header's parentheses
+                header = next(k for k in range(i, end) if tokens[k].text == "(")
+                body = next(k for k in range(_close(tokens, header), end) if tokens[k].text == "{")
+            close = _close(tokens, body)
+            header_text = {t.text for t in tokens[i:body]}
+            markers = inherited | _markers(annotations, None)
+            is_junit3 = "TestCase" in header_text and "extends" in header_text
+            if tok.text == "class" and "abstract" not in _modifiers(tokens, start, i):
+                inner = (*classes, name)
+                yield from _members(tokens, body + 1, close, path, inner, markers, is_junit3)
+            annotations, i = [], close + 1
+            continue
+        if tok.text in (";", "}"):
+            annotations, i = [], i + 1
+            continue
+        if tok.text == "{":  # an initializer block
+            annotations, i = [], _close(tokens, i) + 1
+            continue
+        member_end, method = _member(tokens, i, end)
+        if method is not None and classes:
+            name_at, params, body = method
+            name = tokens[name_at].text
+            is_test = any(a.name in _TEST_ANNOTATIONS for a in annotations) or (
+                junit3 and name.startswith("test") and not params
+            )
+            if is_test and body is not None:
+                where = (path, classes, inherited)
+                yield _test_case(tokens, name_at, params, body, where, annotations)
+        annotations, i = [], member_end
+
+
+def _modifiers(tokens: list[Token], start: int, i: int) -> set[str]:
+    words = set()
+    j = i - 1
+    while j >= start and tokens[j].kind == "id":
+        words.add(tokens[j].text)
+        j -= 1
+    return words
+
+
+def _member(
+    tokens: list[Token], i: int, end: int
+) -> tuple[int, tuple[int, list[Token], tuple[int, int] | None] | None]:
+    """Skip one field or method starting at i. Return the next index and, for a method,
+    (name index, parameter tokens, body range or None)."""
+    j = i
+    while j < end:
+        text = tokens[j].text
+        if text == "<":  # type parameters or generic types
+            depth = 0
+            while j < end:
+                depth += {"<": 1, ">": -1}.get(tokens[j].text, 0)
+                j += 1
+                if depth == 0:
+                    break
+            continue
+        if text == "(" and tokens[j - 1].kind == "id":
+            name_at = j - 1
+            close = _close(tokens, j)
+            params = tokens[j + 1 : close]
+            k = close + 1
+            while k < end and tokens[k].text not in ("{", ";"):
+                k += 1  # throws clause, default value
+            if k < end and tokens[k].text == "{":
+                body_end = _close(tokens, k)
+                return body_end + 1, (name_at, params, (k + 1, body_end))
+            return k + 1, (name_at, params, None)
+        if text in ("=", ";"):
+            k = j
+            while k < end and tokens[k].text != ";":
+                k = _close(tokens, k) + 1 if tokens[k].text in _OPEN else k + 1
+            return k + 1, None
+        if text in _OPEN:
+            j = _close(tokens, j) + 1
+            continue
+        j += 1
+    return end, None
+
+
+# --- markers and parametrized cases -----------------------------------------------------
+
+
+def _markers(annotations: list[_Annotation], params: list[str] | None) -> frozenset[str]:
+    markers = set()
+    for a in annotations:
+        if a.name in _SKIP_ANNOTATIONS:
+            markers.add("skip")
+        elif _CONDITION.fullmatch(a.name):
+            markers.add("skipif")
+        elif a.name == "ParameterizedTest":
+            markers.add("parametrize")
+        elif a.name == "Tag" and a.args:
+            markers.add(f"tag:{join(a.args)}")
+    return frozenset(markers)
+
+
+def _param_names(params: list[Token]) -> tuple[str, ...]:
+    names, depth, last = [], 0, None
+    for tok in params:
+        if tok.text in ("(", "<", "["):
+            depth += 1
+        elif tok.text in (")", ">", "]"):
+            depth -= 1
+        elif depth == 0 and tok.text == ",":
+            if last:
+                names.append(last)
+            last = None
+        elif depth == 0 and tok.kind == "id":
+            last = tok.text
+    if last:
+        names.append(last)
+    return tuple(names)
+
+
+def _parametrized(
+    annotations: list[_Annotation], names: tuple[str, ...]
+) -> tuple[int | None, frozenset[str], tuple[ParamCase, ...]]:
+    """Case count (None if not countable), literal values, and the listed cases."""
+    count: int | None = 0
+    literals: set[str] = set()
+    rows: list[ParamCase] = []
+    sources = 0
+    for a in annotations:
+        line = a.args[0].line if a.args else 0
+        if a.name == "ValueSource":
+            sources += 1
+            values = [t.text for t in a.args if t.kind in ("num", "str", "char")]
+            values += [t.text for t in a.args if t.text in ("true", "false")]
+            values += [join([t]) for t in a.args if t.text.endswith(".class")]
+            literals.update(values)
+            rows.extend(ParamCase(names[:1], (v,), line) for v in values)
+            count = None if count is None else count + len(values)
+        elif a.name == "CsvSource":
+            sources += 1
+            parsed = _csv_rows(a.args)
+            if parsed is None:
+                count = None
+                continue
+            for row in parsed:
+                literals.update(row)
+                rows.append(ParamCase(names[: len(row)], tuple(row), line))
+            count = None if count is None else count + len(parsed)
+        elif a.name in ("NullSource", "EmptySource"):
+            sources += 1
+            count = None if count is None else count + 1
+        elif a.name == "NullAndEmptySource":
+            sources += 1
+            count = None if count is None else count + 2
+        elif a.name in _SOURCES_UNCOUNTABLE:
+            sources += 1
+            count = None
+    if not sources:
+        return None, frozenset(), ()
+    return count, frozenset(literals), tuple(rows) if count is not None else ()
+
+
+def _csv_rows(args: list[Token]) -> list[list[str]] | None:
+    """Rows of a @CsvSource, from `{"a, 1", ...}`, a single string, or `textBlock = \"\"\"`."""
+    if any(t.kind == "id" and t.text not in ("value", "textBlock") for t in args):
+        return None  # delimiter = ..., nullValues = ...: not worth guessing
+    rows = []
+    for tok in (t for t in args if t.kind == "str"):
+        if tok.text.startswith('"""'):
+            body = tok.text[3:-3]
+            lines = [ln.strip() for ln in body.splitlines()]
+            rows += [_csv_split(ln) for ln in lines if ln and not ln.startswith("#")]
+        else:
+            rows.append(_csv_split(tok.text[1:-1]))
+    return rows
+
+
+def _csv_split(line: str) -> list[str]:
+    values, current, quoted = [], [], False
+    for ch in line:
+        if ch == "'":
+            quoted = not quoted
+            current.append(ch)
+        elif ch == "," and not quoted:
+            values.append("".join(current).strip())
+            current = []
+        else:
+            current.append(ch)
+    values.append("".join(current).strip())
+    return [_csv_value(v) for v in values]
+
+
+_CSV_NUMBER = re.compile(r"[+-]?(\d[\d_]*\.?[\d_]*|\.\d+)([eE][+-]?\d+)?")
+
+
+def _csv_value(value: str) -> str:
+    """A CSV cell as a literal: numbers and booleans as written, anything else quoted."""
+    if _CSV_NUMBER.fullmatch(value) or value in ("true", "false"):
+        return value
+    if len(value) >= 2 and value[0] == value[-1] == "'":
+        value = value[1:-1]
+    return '"' + value.replace("\\", "\\\\").replace('"', '\\"') + '"'
+
+
+# --- test bodies ------------------------------------------------------------------------
+
+
+def _test_case(
+    tokens: list[Token],
+    name_at: int,
+    params: list[Token],
+    body: tuple[int, int],
+    where: tuple[str, tuple[str, ...], frozenset[str]],
+    annotations: list[_Annotation],
+) -> TestCase:
+    path, classes, inherited = where
+    start, end = body
+    stmts = tokens[start:end]
+    names = _param_names(params)
+    case = TestCase(
+        path=path,
+        name=tokens[name_at].text,
+        classes=classes,
+        line=tokens[name_at].line,
+        end_line=tokens[end].line,
+        markers=inherited | _markers(annotations, list(names)),
+        is_empty=all(t.text == ";" for t in stmts),
+        returns_first=bool(stmts) and stmts[0].text == "return",
+        body_text=join(stmts),
+    )
+    case.cannot_fail = case.is_empty
+    if "parametrize" in case.markers:
+        case.param_names = frozenset(names)
+        case.param_cases, case.param_literals, case.param_rows = _parametrized(annotations, names)
+    _scan_body(stmts, case)
+    return case
+
+
+def _scan_body(stmts: list[Token], case: TestCase) -> None:
+    i = 0
+    while i < len(stmts):
+        tok = stmts[i]
+        if tok.text == "try" and i + 1 < len(stmts) and stmts[i + 1].text in ("{", "("):
+            case.try_blocks.append(_try_block(stmts, i))
+        if not _statement_start(stmts, i):
+            i += 1
+            continue
+        if tok.text == "assert" and tok.kind == "id":
+            stop = _statement_end(stmts, i)
+            case.assertions.append(_assertion("assert", "", stmts[i:stop], tok.line))
+            i = stop
+            continue
+        call = _call_name(stmts, i)
+        if call is not None:
+            name, at = call
+            stop = _statement_end(stmts, i)
+            if name in _SKIP_CALLS:
+                case.skip_calls.append(join(stmts[i : at + 1]))
+            elif _is_assert_call(name):
+                kind = "raises" if name in _RAISES_CALLS else "call"
+                case.assertions.append(_assertion(kind, name, stmts[i:stop], tok.line))
+                i = stop
+                continue
+        i += 1
+    case.call_count = sum(
+        1
+        for k in range(len(stmts) - 1)
+        if stmts[k].kind == "id"
+        and stmts[k + 1].text == "("
+        and stmts[k].text not in _KEYWORDS
+        and not _is_assert_call(stmts[k].text)
+        and stmts[k].text not in _SKIP_CALLS
+    )
+
+
+def _assertion(kind: str, name: str, tokens: list[Token], line: int) -> Assertion:
+    return Assertion(kind, name, join(tokens), line, lang="java")
+
+
+def _is_assert_call(name: str) -> bool:
+    return name.startswith("assert") or name in ("fail", "verify", "verifyNoInteractions")
+
+
+def _statement_start(stmts: list[Token], i: int) -> bool:
+    return i == 0 or stmts[i - 1].text in (";", "{", "}", ")", "->", "else", ":")
+
+
+def _call_name(stmts: list[Token], i: int) -> tuple[str, int] | None:
+    """`assertEquals(` or `Assertions.assertEquals(` at i: the called name and its index."""
+    j = i
+    if (
+        stmts[j].text in _ASSERT_QUALIFIERS
+        and j + 2 < len(stmts)
+        and stmts[j + 1].text == "."
+        and stmts[j + 2].kind == "id"
+    ):
+        j += 2
+    if stmts[j].kind == "id" and j + 1 < len(stmts) and stmts[j + 1].text == "(":
+        return stmts[j].text, j
+    return None
+
+
+def _statement_end(stmts: list[Token], i: int) -> int:
+    """Index just past the statement starting at i: its `;`, or the end of an expression
+    lambda's body (a `)` or `,` that closes past where it started)."""
+    depth = 0
+    for k in range(i, len(stmts)):
+        text = stmts[k].text
+        if text in _OPEN:
+            depth += 1
+        elif text in (")", "}", "]"):
+            depth -= 1
+            if depth < 0:
+                return k
+        elif depth == 0 and text == ";":
+            return k + 1
+        elif depth == 0 and text == ",":
+            return k
+    return len(stmts)
+
+
+def _try_block(stmts: list[Token], i: int) -> TryBlock:
+    j = i + 1
+    if stmts[j].text == "(":  # try-with-resources
+        j = _close(stmts, j) + 1
+    body_end = _close(stmts, j)
+    wraps = any(
+        _statement_start(stmts, k)
+        and _call_name(stmts, k) is not None
+        and _is_assert_call(_call_name(stmts, k)[0])  # type: ignore[index]
+        or stmts[k].text == "assert"
+        for k in range(j + 1, body_end)
+    )
+    handlers: list[str] = []
+    noop = True
+    k = body_end + 1
+    while k < len(stmts) and stmts[k].text == "catch":
+        close = _close(stmts, k + 1)
+        types = [t.text for t in stmts[k + 2 : close - 1] if t.kind == "id"]
+        handlers.append(" | ".join(types))
+        handler_end = _close(stmts, close + 1)
+        if any(t.text != ";" for t in stmts[close + 2 : handler_end]):
+            noop = False
+        k = handler_end + 1
+    return TryBlock(stmts[i].line, tuple(handlers), wraps, noop and bool(handlers))

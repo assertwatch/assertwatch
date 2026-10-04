@@ -1,0 +1,150 @@
+label = 'refactor'
+title = 'A test moves to its own class in a new file'
+
+[before]
+"src/main/java/shop/Cart.java" = '''package shop;
+
+import java.util.ArrayList;
+import java.util.List;
+
+public class Cart {
+    private final List<double[]> items = new ArrayList<>();
+
+    public void add(String name, int qty, double price) {
+        if (qty <= 0) throw new IllegalArgumentException("qty must be positive");
+        items.add(new double[] {qty, price});
+    }
+
+    public int count() {
+        return items.stream().mapToInt(i -> (int) i[0]).sum();
+    }
+
+    public double total() {
+        return items.stream().mapToDouble(i -> i[0] * i[1]).sum();
+    }
+
+    public double checkout() {
+        if (items.isEmpty()) throw new IllegalStateException("cart is empty");
+        return total();
+    }
+
+    public static double withTax(double amount, double rate) {
+        return Math.round(amount * (1 + rate) * 100) / 100.0;
+    }
+}
+'''
+"src/test/java/shop/CartTest.java" = '''package shop;
+
+import static org.assertj.core.api.Assertions.assertThat;
+import static org.junit.jupiter.api.Assertions.*;
+
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.CsvSource;
+
+class CartTest {
+    @Test
+    void totalSumsItems() {
+        Cart cart = new Cart();
+        cart.add("apple", 3, 0.5);
+        cart.add("pear", 2, 1.25);
+        assertEquals(4.0, cart.total(), 1e-9);
+        assertEquals(5, cart.count());
+    }
+
+    @ParameterizedTest
+    @CsvSource({"10.05, 0.2, 12.06", "10.0, 0.0, 10.0"})
+    void taxRoundsToCents(double amount, double rate, double expected) {
+        assertEquals(expected, Cart.withTax(amount, rate));
+    }
+
+    @Test
+    void emptyCartRaisesOnCheckout() {
+        IllegalStateException e = assertThrows(IllegalStateException.class, () -> new Cart().checkout());
+        assertThat(e).hasMessageContaining("empty");
+    }
+
+    @Test
+    void negativeQuantityIsRejected() {
+        assertThrows(IllegalArgumentException.class, () -> new Cart().add("apple", -1, 0.5));
+    }
+}
+'''
+
+[after]
+"src/main/java/shop/Cart.java" = '''package shop;
+
+import java.util.ArrayList;
+import java.util.List;
+
+public class Cart {
+    private final List<double[]> items = new ArrayList<>();
+
+    public void add(String name, int qty, double price) {
+        if (qty <= 0) throw new IllegalArgumentException("qty must be positive");
+        items.add(new double[] {qty, price});
+    }
+
+    public int count() {
+        return items.stream().mapToInt(i -> (int) i[0]).sum();
+    }
+
+    public double total() {
+        return items.stream().mapToDouble(i -> i[0] * i[1]).sum();
+    }
+
+    public double checkout() {
+        if (items.isEmpty()) throw new IllegalStateException("cart is empty");
+        return total();
+    }
+
+    public static double withTax(double amount, double rate) {
+        return Math.round(amount * (1 + rate) * 100) / 100.0;
+    }
+}
+'''
+"src/test/java/shop/CartTest.java" = '''package shop;
+
+import static org.assertj.core.api.Assertions.assertThat;
+import static org.junit.jupiter.api.Assertions.*;
+
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.CsvSource;
+
+class CartTest {
+    @Test
+    void totalSumsItems() {
+        Cart cart = new Cart();
+        cart.add("apple", 3, 0.5);
+        cart.add("pear", 2, 1.25);
+        assertEquals(4.0, cart.total(), 1e-9);
+        assertEquals(5, cart.count());
+    }
+
+    @ParameterizedTest
+    @CsvSource({"10.05, 0.2, 12.06", "10.0, 0.0, 10.0"})
+    void taxRoundsToCents(double amount, double rate, double expected) {
+        assertEquals(expected, Cart.withTax(amount, rate));
+    }
+
+    @Test
+    void emptyCartRaisesOnCheckout() {
+        IllegalStateException e = assertThrows(IllegalStateException.class, () -> new Cart().checkout());
+        assertThat(e).hasMessageContaining("empty");
+    }
+}
+'''
+"src/test/java/shop/CartValidationTest.java" = '''package shop;
+
+import static org.junit.jupiter.api.Assertions.*;
+
+import org.junit.jupiter.api.Test;
+
+class CartValidationTest {
+    @Test
+    void negativeQuantityIsRejected() {
+        assertThrows(IllegalArgumentException.class, () -> new Cart().add("apple", -1, 0.5));
+    }
+}
+'''

@@ -10,7 +10,10 @@ from fnmatch import fnmatch, fnmatchcase
 from pathlib import PurePosixPath
 
 CONFIG_PATH = "assertwatch.toml"
-TEST_FILE_GLOBS = ("test_*.py", "*_test.py")
+PYTHON_TEST_GLOBS = ("test_*.py", "*_test.py")
+# Maven Surefire's and Failsafe's default includes.
+JAVA_TEST_GLOBS = ("Test*.java", "*Test.java", "*Tests.java", "*TestCase.java", "*IT.java")
+TEST_FILE_GLOBS = PYTHON_TEST_GLOBS + JAVA_TEST_GLOBS
 SETTINGS = (".claude/settings.json", ".claude/settings.local.json")
 WORKFLOWS = (".github/workflows/*.yml", ".github/workflows/*.yaml")
 PYTEST_FILES = frozenset({"pytest.ini", "pyproject.toml", "setup.cfg", "tox.ini", ".coveragerc"})

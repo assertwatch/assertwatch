@@ -18,12 +18,14 @@ from dataclasses import dataclass
 
 from assertwatch.extract.python import dotted
 from assertwatch.model import Assertion, Finding, Severity
-from assertwatch.rules import Context, Rule
+from assertwatch.rules import Context, Rule, java_checks
 from assertwatch.rules.matching import Pair
 
 ID = "AW004"
 
-BROAD_EXCEPTIONS = frozenset({"Exception", "BaseException", "Warning", "Throwable"})
+BROAD_EXCEPTIONS = frozenset(
+    {"Exception", "BaseException", "Warning", "Throwable", "RuntimeException"}
+)
 
 _EQUAL_CALLS = frozenset(
     {
@@ -87,6 +89,9 @@ class Check:
 
 def classify(assertion: Assertion) -> Check | None:
     """Turn an assertion into a Check, or None if it doesn't fit a known shape."""
+    if assertion.lang == "java":
+        fields = java_checks.classify(assertion.text)
+        return None if fields is None else Check(**fields)
     try:
         if assertion.kind == "assert":
             stmt = ast.parse(assertion.text).body[0]
