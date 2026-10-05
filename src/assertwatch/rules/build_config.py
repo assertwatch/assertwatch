@@ -50,16 +50,21 @@ _PARAMETERS = {
     "haltOnFailure": ("false", ("jacoco",)),
 }
 _RUNNERS = ("surefire", "failsafe")
-# Surefire's includes when none are given.
+# Each runner's includes when none are given.
 _DEFAULT_INCLUDES = frozenset(
     {"**/Test*.java", "**/*Test.java", "**/*Tests.java", "**/*TestCase.java"}
 )
+_FAILSAFE_INCLUDES = frozenset({"**/IT*.java", "**/*IT.java", "**/*ITCase.java"})
 # Custom properties that look like a test skip switch: skipUnitTests, skip.it, ignore.tests.
 _SKIPPY = re.compile(r"(?i)skip|ignore|disable")
 _TESTISH = re.compile(
     r"(?i)test|unit|integration|surefire|failsafe|jacoco|coverage|(^|[._-])its?($|[._-])|ITs"
 )
-_DOCTYPE = re.compile(r"<!DOCTYPE[^\[>]*(\[.*?\])?\s*>", re.S | re.I)
+# Larger build or CI files aren't read: they are reported as unchecked (fail closed).
+MAX_CHARS = 1_000_000
+# Longer Gradle statements aren't analysed; one in the new file is reported as unchecked.
+MAX_STATEMENT = 8_000
+_TOO_LARGE = ("The file is too large to check for loosened test settings", "")
 
 
 # --- command lines ----------------------------------------------------------------------
@@ -71,19 +76,33 @@ _MAVEN_TEST_GOALS = frozenset(
 )
 _GRADLE_TEST_TASK = re.compile(r"(?i)^(\w*test\w*|check|build)$")
 _SEGMENTS = re.compile(r"&&|\|\||[;|]")
+_ENV_ASSIGN = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=")
+# Environment variables whose options every Maven or Gradle run (or JVM) picks up.
+_OPTION_VARS = re.compile(
+    r"^\s*(?:-\s*)?(?:export\s+)?"
+    r"(MAVEN_ARGS|MAVEN_OPTS|MAVEN_CONFIG|GRADLE_OPTS|JAVA_TOOL_OPTIONS|JDK_JAVA_OPTIONS"
+    r"|_JAVA_OPTIONS)\s*[:=]\s*(.*)$"
+)
 
 
 def flags(tokens: list[str]) -> Counter[str]:
     """Loosening options in a command's tokens: `-DskipTests`, `-x test`, ..."""
     found: Counter[str] = Counter()
     for i, token in enumerate(tokens):
-        if token == "-D" and i + 1 < len(tokens):  # `-D skipTests`, as Maven also accepts
+        if token in ("-D", "--define") and i + 1 < len(tokens):  # `-D skipTests`
             token = "-D" + tokens[i + 1]
-        if token.startswith("-D"):
+        elif token.startswith("--define="):
+            token = "-D" + token.removeprefix("--define=")
+        elif _ENV_ASSIGN.match(token):  # MAVEN_ARGS=-DskipTests mvn verify
+            found += flags(_tokens(token.partition("=")[2]))
+            continue
+        if token in ("-fn", "--fail-never"):
+            found[token] += 1
+        elif token.startswith("-D"):
             name, eq, value = token[2:].partition("=")
             if name in _PROPERTIES and (value if eq else "true").lower() == _PROPERTIES[name]:
                 found[token] += 1
-            elif name in ("test", "it.test") and "!" in value:  # `-Dtest='!CartTest'`
+            elif name in ("test", "it.test") and value:  # runs only these, or `!` excludes
                 found[token] += 1
             elif name in ("excludedGroups", "surefire.excludedGroups") and value:
                 found[token] += 1
@@ -94,6 +113,11 @@ def flags(tokens: list[str]) -> Counter[str]:
                 found[f"{token} {tokens[i + 1]}"] += 1
         elif token.startswith("--exclude-task="):
             if _GRADLE_TEST_TASK.match(token.partition("=")[2].rsplit(":", 1)[-1]):
+                found[token] += 1
+        elif token == "--tests" and i + 1 < len(tokens) or token.startswith("--tests="):
+            found[token if "=" in token else f"{token} {tokens[i + 1]}"] += 1  # only these
+        elif token.startswith("-x") and len(token) > 2:  # Gradle reads `-xtest` as `-x test`
+            if _GRADLE_TEST_TASK.match(token[2:].rsplit(":", 1)[-1]):
                 found[token] += 1
     return found
 
@@ -117,6 +141,9 @@ def _commands(lines: list[str]) -> _Commands:
     result = _Commands()
     joined = "\n".join(lines).replace("\\\n", " ")
     for line in joined.splitlines():
+        option_var = _OPTION_VARS.match(line)
+        if option_var and "$" in option_var[2]:
+            result.outside[f"{option_var[1]} set from a variable"] += 1
         for segment in _SEGMENTS.split(line):
             tokens = _tokens(segment)
             if _tool(tokens) is None:  # a command inside a string: sh './mvnw verify'
@@ -126,6 +153,9 @@ def _commands(lines: list[str]) -> _Commands:
             if tool is None:
                 result.outside += found
                 continue
+            for arg in tokens[tool + 1 :]:
+                if arg.startswith("$") or "`" in arg or "$(" in arg:
+                    found[f"{arg} (arguments from a variable)"] += 1
             result.inside += found
             result.runs += 1
             if _runs_tests(tokens[tool].rsplit("/", 1)[-1], tokens[tool + 1 :]) and not found:
@@ -157,6 +187,9 @@ def _runs_tests(tool: str, args: list[str]) -> bool:
 def workflow(before: list[str], after: list[str]) -> Iterator[Loosening]:
     """CI lines: a skip flag that takes a test run away, or one set outside any run; or a
     workflow that still builds with Maven/Gradle but no longer runs any tests."""
+    if sum(map(len, after)) > MAX_CHARS:
+        yield _TOO_LARGE
+        return
     old, new = _commands(before), _commands(after)
     added = (new.inside + new.outside) - (old.inside + old.outside)
     if added and (new.enforcing < old.enforcing or new.outside - old.outside):
@@ -168,6 +201,9 @@ def workflow(before: list[str], after: list[str]) -> Iterator[Loosening]:
 
 def config_flags(before: str | None, after: str | None) -> Iterator[Loosening]:
     """.mvn/maven.config and .mvn/jvm.config apply to every Maven run."""
+    if after is not None and len(after) > MAX_CHARS:
+        yield _TOO_LARGE
+        return
     added = flags(_tokens(after or "")) - flags(_tokens(before or ""))
     for flag in sorted(added):
         yield (f"Every Maven run now gets `{flag}`", flag)
@@ -187,6 +223,7 @@ class _Pom:
     modules: set[tuple[str, str]] = field(default_factory=set)  # (profile or "", module)
     properties: dict[str, str] = field(default_factory=dict)
     sources: set[tuple[str, str]] = field(default_factory=set)  # test source/class folders
+    runners: set[str] = field(default_factory=set)  # Surefire/Failsafe plugins declared
 
 
 def _local(tag: object) -> str:
@@ -239,17 +276,17 @@ def _effective(element: ET.Element, settings: bool) -> Iterator[ET.Element]:
 def _pom(text: str | None, settings: bool = False) -> _Pom | None:
     if text is None:
         return _Pom()
-    text = _DOCTYPE.sub("", text)
-    if re.search(r"<!(DOCTYPE|ENTITY)", text, re.I):
-        return None  # a DTD the pattern above didn't remove: don't let the parser see it
+    text = text.removeprefix("\ufeff")
+    if "<!doctype" in text.lower() or "<!entity" in text.lower():
+        return None  # no pom needs a DTD; never let the parser expand one
     try:
         root = ET.fromstring(text)
-    except ET.ParseError:
-        return None
-    pom = _Pom()
-    for properties in (e for e in _effective(root, settings) if _local(e.tag) == "properties"):
-        pom.properties |= {_local(p.tag): _text(p) for p in properties}
-    _walk(root, "", "", pom, settings)
+        pom = _Pom()
+        for properties in (e for e in _effective(root, settings) if _local(e.tag) == "properties"):
+            pom.properties |= {_local(p.tag): _text(p) for p in properties}
+        _walk(root, "", "", pom, settings)
+    except (ET.ParseError, RecursionError, ValueError):
+        return None  # unreadable, or nested past what a real pom needs
     profiles = _child(root, "profiles")
     owners = [(root, "")] + [(p, _text(_child(p, "id"))) for p in _children(profiles)]
     for profile, owner in owners:
@@ -264,13 +301,17 @@ def _skip_switch(name: str) -> bool:
 
 
 def _resolve(value: str, properties: dict[str, str]) -> str:
-    """`${name}` replaced by the pom's own property, a few levels deep (Maven does the same)."""
+    """Each `${name}` replaced by the pom's own property, a few levels deep, as Maven does
+    (`${a}${b}` included)."""
     for _ in range(5):
-        ref = re.fullmatch(r"\$\{([^}]+)\}", value)
-        if not ref or ref[1] not in properties:
+        expanded = _REFERENCE.sub(lambda m: properties.get(m[1], m[0]), value)
+        if expanded == value:
             break
-        value = properties[ref[1]]
+        value = expanded[:1000]
     return value
+
+
+_REFERENCE = re.compile(r"\$\{([^${}]{1,200})\}")
 
 
 def _walk(element: ET.Element, plugin: str, parent: str, pom: _Pom, settings: bool) -> None:
@@ -278,7 +319,9 @@ def _walk(element: ET.Element, plugin: str, parent: str, pom: _Pom, settings: bo
     if tag == "profile" and not settings and not _active(element):
         return
     if tag == "plugin":
-        plugin = _text(_child(element, "artifactId"))
+        plugin = _resolve(_text(_child(element, "artifactId")), pom.properties)
+        if any(r in plugin for r in _RUNNERS):
+            pom.runners.add(plugin)
     owner = "properties" if parent == "properties" else plugin
     value = _resolve(_text(element), pom.properties).lower()
     runner = any(r in plugin for r in _RUNNERS)
@@ -317,9 +360,13 @@ def _walk(element: ET.Element, plugin: str, parent: str, pom: _Pom, settings: bo
             counter = _text(_child(limit, "counter")) or "INSTRUCTION"
             kind = _text(_child(limit, "value")) or "COVEREDRATIO"
             for bound in ("minimum", "maximum"):
-                number = _ratio(_text(_child(limit, bound)))
-                if number is not None:
-                    pom.limits[(scope, counter, kind, bound)] = number
+                number = _ratio(_resolve(_text(_child(limit, bound)), pom.properties))
+                if number is None:
+                    continue
+                # The same limit declared twice: keep the looser one, whichever Maven uses.
+                key = (scope, counter, kind, bound)
+                pick = min if bound == "minimum" else max
+                pom.limits[key] = pick(number, pom.limits.get(key, number))
     for child in element:
         _walk(child, plugin, tag, pom, settings)
 
@@ -334,13 +381,15 @@ def maven(
     """gone(module): the module is deleted or moved with its tests, not just left out."""
     if after is None:
         return  # a deleted root pom breaks the build; a module's is checked through gone()
+    if len(after) > MAX_CHARS:
+        yield _TOO_LARGE
+        return
     old, new = _pom(before, settings), _pom(after, settings)
     if new is None:
-        if old is not None:
-            yield ("pom.xml can't be read, so its test settings can't be compared", "")
+        yield ("The file can't be read, so its test settings can't be compared", "")
         return
     if old is None:
-        return
+        old = _Pom()  # the old file unreadable: everything the new one loosens counts
     for owner, setting in sorted(new.switches - old.switches):
         where = "a property" if owner == "properties" else owner
         yield (f"pom.xml now sets `{setting}` ({where}), so tests are skipped or not "
@@ -348,10 +397,10 @@ def maven(
     for plugin, pattern in sorted(new.excludes - old.excludes):
         yield (f"{plugin} in pom.xml now excludes `{pattern}`", pattern)
     for plugin in sorted(set(old.includes) | set(new.includes)):
-        lost = _narrowed(
-            old.includes.get(plugin) or _DEFAULT_INCLUDES,
-            new.includes.get(plugin) or _DEFAULT_INCLUDES,
-        )
+        if "failsafe" in plugin and plugin not in old.runners:
+            continue  # Failsafe runs only once declared: a new one adds tests, it can't narrow
+        defaults = _FAILSAFE_INCLUDES if "failsafe" in plugin else _DEFAULT_INCLUDES
+        lost = _narrowed(old.includes.get(plugin) or defaults, new.includes.get(plugin) or defaults)
         if lost:
             yield (f"{plugin} in pom.xml no longer includes {_list(lost)}", "include")
     for owner in sorted(set(old.groups) | set(new.groups)):
@@ -412,12 +461,19 @@ def _limits(
 # --- Gradle -----------------------------------------------------------------------------
 
 _STRING = re.compile(r"'''.*?'''|\"\"\".*?\"\"\"|'(?:\\.|[^'\\\n])*'|\"(?:\\.|[^\"\\\n])*\"", re.S)
-_COMMENT_OR_STRING = re.compile(_STRING.pattern + r"|//[^\n]*|/\*.*?\*/", re.S)
+# One pass over a script: strings and comments, each allowed to run to the end of the
+# input (or line) unterminated, so the scan never backtracks; everything else in chunks.
+_LEX = re.compile(
+    r"'''.*?(?:'''|\Z)|\"\"\".*?(?:\"\"\"|\Z)|'(?:\\.|[^'\\\n])*'?|\"(?:\\.|[^\"\\\n])*\"?"
+    r"|//[^\n]*|/\*.*?(?:\*/|\Z)|[^'\"/]+|/",
+    re.S,
+)
+_UNICODE_ESCAPE = re.compile(r"\\u+([0-9a-fA-F]{4})")
 _TEST_HEADER = re.compile(r"(?i)test")
 # `x = v`, `x v` (Groovy), after any receiver: `tasks.getByName("test").enabled = false`.
-_ASSIGN = re.compile(r"^(.*?)\b([A-Za-z]\w*)\s*(?:=|\s)\s*([^=].*?)\s*$")
-_SETTER = re.compile(r"\bset([A-Z]\w*)\s*\((.*)\)\s*$")  # setEnabled(false)
-_PROPERTY_SET = re.compile(r"\b(\w+)\s*\.\s*set\s*\((.*)\)\s*$")  # enabled.set(false)
+_SETTER = re.compile(r"\bset([A-Z]\w{0,100})\s*\(")  # setEnabled(false)
+_PROPERTY_SET = re.compile(r"\b(\w{1,100})\s*\.\s*set\s*\(")  # enabled.set(false)
+_NOT_ASSIGN = "=!<>+-*/?:~%&|^"  # `==`, `!=`, `+=`, `?=`, ... are not plain assignments
 _EXCLUDE_LISTS = (
     "excludeTestsMatching",
     "excludeTags",
@@ -453,6 +509,7 @@ class _Gradle:
     minimums: list[float] = field(default_factory=list)
     sources: set[tuple[str, str]] = field(default_factory=set)  # (task, assignment)
     projects: set[str] = field(default_factory=set)  # settings.gradle includes
+    unreadable: bool = False  # a statement too long to analyse
 
 
 def _task(headers: tuple[str, ...]) -> str:
@@ -470,59 +527,119 @@ def _task(headers: tuple[str, ...]) -> str:
 
 
 def _statements(text: str) -> Iterator[tuple[str, tuple[str, ...]]]:
-    """Each statement with the headers of the blocks around it, outermost first."""
-    code = _COMMENT_OR_STRING.sub(lambda m: m[0] if m[0][0] in "'\"" else " ", text)
+    """Each statement with the headers of the blocks around it, outermost first. Linear in
+    the size of the script."""
+    text = _UNICODE_ESCAPE.sub(lambda m: chr(int(m[1], 16)), text.removeprefix("\ufeff"))
     stack: list[str] = []
     depth = 0  # open ( and [ in the current statement
     current: list[str] = []
-    i = 0
-    while i < len(code):
-        string = _STRING.match(code, i)
-        if string:
-            current.append(string[0])
-            i = string.end()
+
+    def flush() -> Iterator[tuple[str, tuple[str, ...]]]:
+        statement = "".join(current).strip()
+        current.clear()
+        if statement:
+            yield statement, tuple(stack)
+
+    for token in _LEX.finditer(text):
+        chunk = token[0]
+        if chunk[0] in "'\"":
+            current.append(chunk)
             continue
-        char = code[i]
-        text = "".join(current).rstrip()
-        if char in "([":
-            depth += 1
-        elif char in ")]":
-            depth = max(depth - 1, 0)
-        if char == "\n" and (depth or text.endswith((",", "=", "+", "(", "&&", "||"))):
-            char = " "  # the statement goes on: `include 'a',\n 'b'`, `exclude(\n "x"\n)`
-        if char == "{":
-            stack.append("".join(current).strip().rsplit("\n", 1)[-1])
-            current = []
-        elif char in "};\n":
-            statement = "".join(current).strip()
-            if statement:
-                yield statement, tuple(stack)
-            current = []
-            if char == "}" and stack:
-                stack.pop()
-        else:
-            current.append(char)
-        i += 1
-    if "".join(current).strip():
-        yield "".join(current).strip(), tuple(stack)
+        if chunk.startswith(("//", "/*")):
+            current.append("\n" if "\n" in chunk else " ")
+            if chunk.startswith("//"):
+                continue
+            chunk = ""
+        for char in chunk:
+            if char in "([":
+                depth += 1
+            elif char in ")]":
+                depth = max(depth - 1, 0)
+            if char == "\n" and (depth or _continues(current)):
+                char = " "  # the statement goes on: `include 'a',\n 'b'`, `exclude(\n "x"\n)`
+            if char == "{":
+                stack.append("".join(current).strip().rsplit("\n", 1)[-1][-MAX_STATEMENT:])
+                current.clear()
+                depth = 0
+            elif char in "};\n":
+                yield from flush()
+                depth = 0
+                if char == "}" and stack:
+                    stack.pop()
+            else:
+                current.append(char)
+    yield from flush()
+
+
+def _continues(current: list[str]) -> bool:
+    """The statement so far ends in a way that carries it onto the next line."""
+    for part in reversed(current):
+        tail = part.rstrip()
+        if tail:
+            return tail.endswith((",", "=", "+", "(", "&&", "||"))
+    return False
 
 
 def _assignment(statement: str) -> tuple[str, str, str] | None:
-    """(receiver, property, value) of an assignment in any of its spellings, or None."""
-    statement = _SETTER.sub(lambda m: f"{m[1][0].lower()}{m[1][1:]} = {m[2]}", statement)
-    statement = _PROPERTY_SET.sub(r"\1 = \2", statement)
-    match = _ASSIGN.match(statement)
-    if not match:
+    """(receiver, property, value) of an assignment in any of its spellings, or None:
+    `x = v`, Groovy's `x v`, `setX(v)`, `x.set(v)`, after any receiver."""
+    setter = _SETTER.search(statement) or _PROPERTY_SET.search(statement)
+    if setter and statement.rstrip().endswith(")"):
+        name = setter[1]
+        prefix = statement[: setter.start()]
+        value = statement[setter.end() : statement.rstrip().rfind(")")]
+        return _named(prefix, name, value)
+    equals = _equals_sign(statement)
+    if equals is None:
+        parts = statement.split()
+        if len(parts) != 2 or not all(c.isalnum() or c in "._" for c in parts[0]):
+            return None
+        left, value = parts
+    else:
+        left, value = statement[:equals], statement[equals + 1 :]
+    left = left.rstrip()
+    start = len(left)
+    while start and (left[start - 1].isalnum() or left[start - 1] == "_"):
+        start -= 1
+    return _named(left[:start], left[start:], value)
+
+
+def _named(prefix: str, name: str, value: str) -> tuple[str, str, str] | None:
+    if not name or not name[0].isalpha():
         return None
-    name = match[2]
-    if re.match(r"is[A-Z]", name):
-        name = name[2:]
-    return match[1], name[0].lower() + name[1:], match[3]
+    if len(name) > 2 and name.startswith("is") and name[2].isupper():
+        name = name[2:]  # Kotlin's isEnabled, isIgnoreFailures
+    return prefix, name[0].lower() + name[1:], value.strip()
+
+
+def _equals_sign(statement: str) -> int | None:
+    """Index of the first plain `=` outside strings, or None."""
+    quote = ""
+    escaped = False
+    for i, char in enumerate(statement):
+        if quote:
+            if escaped:
+                escaped = False
+            elif char == "\\":
+                escaped = True
+            elif char == quote:
+                quote = ""
+        elif char in "'\"":
+            quote = char
+        elif char == "=":
+            before = statement[i - 1] if i else ""
+            after = statement[i + 1] if i + 1 < len(statement) else ""
+            if before not in _NOT_ASSIGN and after not in "=~>":
+                return i
+    return None
 
 
 def _gradle(text: str | None, settings: bool = False) -> _Gradle:
     facts = _Gradle()
     for statement, stack in _statements(text or ""):
+        if len(statement) > MAX_STATEMENT:
+            facts.unreadable = True
+            continue
         headers = " ".join(stack)
         in_test = bool(_TEST_HEADER.search(headers)) and not _NOT_TEST_BLOCKS.search(headers)
         task = _task(stack) if in_test else _ALL_TEST_TASKS
@@ -580,8 +697,13 @@ def gradle(
     """gone(folder): the subproject is deleted or moved with its tests, not just left out."""
     if after is None:
         return
+    if len(after) > MAX_CHARS:
+        yield _TOO_LARGE
+        return
     settings = name.startswith("settings.")
     old, new = _gradle(before, settings), _gradle(after, settings)
+    if new.unreadable:
+        yield (f"A statement longer than {MAX_STATEMENT} characters can't be checked", "")
     for project in sorted(old.projects - new.projects):
         if not gone(project.strip(":").replace(":", "/")):
             yield (f"Gradle settings no longer include project `{project}`, so its tests "

@@ -64,6 +64,9 @@ _CONTINUE = re.compile(r"^\s*continue-on-error\s*:\s*(true|\$\{\{)", re.I | re.M
 _NEVER = re.compile(r"""^\s*if\s*:\s*(\$\{\{\s*)?(false|0|''|""|null)(\s*\}\})?\s*$""", re.I)
 # Events that run a workflow on code changes; losing all of them stops its tests on PRs.
 _CODE_EVENTS = frozenset({"push", "pull_request", "pull_request_target", "merge_group"})
+_MAX_CANDIDATES = 200
+_ANCHOR = re.compile(r"&([A-Za-z0-9_-]+)")
+_ALIAS = re.compile(r"(?<![\w*])\*([A-Za-z0-9_-]+)")
 _SCRIPT = re.compile(r"(\.sh|\.bash|Makefile|justfile)$")
 
 
@@ -109,7 +112,8 @@ def _folder_gone(change: FileChange, context: Context, builds: tuple[str, ...], 
     )
     if not moved:
         return False
-    return context.tests_under is None or not context.tests_under(folder)
+    # Without a way to look (no repository), assume tests are left: fail closed.
+    return context.tests_under is not None and not context.tests_under(folder)
 
 
 def _converted(change: FileChange, context: Context) -> str | None:
@@ -146,8 +150,11 @@ def _runs_tests(text: str) -> bool:
 
 
 def _build(change: FileChange, found: Iterator[build_config.Loosening]) -> Iterator[Finding]:
-    for what, needle in found:
-        yield _finding(change, what, needle)
+    try:
+        for what, needle in found:
+            yield _finding(change, what, needle)
+    except Exception:  # noqa: BLE001 - whatever went wrong, the file is unchecked: block
+        yield _finding(change, "The file could not be checked for loosened test settings")
 
 
 def _finding(change: FileChange, what: str, needle: str = "") -> Finding:
@@ -228,6 +235,9 @@ def _hooks_disabled(data: object) -> bool:
 
 def _workflow(change: FileChange) -> Iterator[Finding]:
     before, after = change.before or "", change.after or ""
+    if len(after) > build_config.MAX_CHARS:
+        yield _finding(change, "The workflow is too large to check for loosened test settings")
+        return
     if _guard_lines(after) < _guard_lines(before):
         yield _finding(change, "The AssertWatch step was removed from the CI workflow")
     if _test_continues(after) > _test_continues(before):
@@ -253,12 +263,7 @@ def _workflow(change: FileChange) -> Iterator[Finding]:
 
 def _never_runs(text: str) -> int:
     """`if:` conditions that are always false, on a step or job that runs tests."""
-    lines = text.splitlines()
-    return sum(
-        1
-        for k, line in enumerate(lines)
-        if _NEVER.match(line.lstrip(" -")) and _TEST_COMMAND.search(_block(lines, k))
-    )
+    return _settings_on_test_steps(text, _NEVER)
 
 
 def _triggers(text: str) -> set[str]:
@@ -273,19 +278,45 @@ def _triggers(text: str) -> set[str]:
             if rest.strip() and not rest[0].isspace():
                 break
             block.append(rest)
-        return set(re.findall(r"[a-z_]+", "\n".join(block)))
+        text = "\n".join(block)
+        for alias in _ALIAS.findall(text):  # `on: *triggers`: the anchor's value counts
+            text += "\n" + "\n".join(_anchored(lines, alias))
+        return set(re.findall(r"[a-z_]+", text))
     return set()
+
+
+def _settings_on_test_steps(text: str, setting: re.Pattern[str]) -> int:
+    """How many lines set this on a step or job that runs tests. Past a sane number of such
+    lines, all of them count, without looking at their steps (bounded work, fail closed)."""
+    lines = text.splitlines()
+    candidates = [k for k, line in enumerate(lines) if setting.match(line.lstrip(" -"))]
+    if len(candidates) > _MAX_CANDIDATES:
+        return len(candidates)
+    return sum(1 for k in candidates if _TEST_COMMAND.search(_scope(lines, k)))
+
+
+def _scope(lines: list[str], k: int) -> str:
+    """Line k's step or job, plus what YAML anchors and aliases join to it: a step that
+    merges in an anchored mapping (`<<: *defaults`), and the steps that reuse an anchor
+    defined here."""
+    block = _block(lines, k)
+    parts = [block]
+    for alias in _ALIAS.findall(block):
+        parts += _anchored(lines, alias)
+    for anchor in _ANCHOR.findall(block):
+        parts += [_block(lines, j) for j, line in enumerate(lines) if f"*{anchor}" in line]
+    return "\n".join(parts)
+
+
+def _anchored(lines: list[str], name: str) -> list[str]:
+    """The line defining anchor &name and the block under it."""
+    return [line + "\n" + _block(lines, j) for j, line in enumerate(lines) if f"&{name}" in line]
 
 
 def _test_continues(text: str) -> int:
     """`continue-on-error` settings on a step or job that runs tests. One on a step that only
     downloads or uploads something can't hide a failing test."""
-    lines = text.splitlines()
-    found = 0
-    for k, line in enumerate(lines):
-        if _CONTINUE.match(line.lstrip(" -")) and _TEST_COMMAND.search(_block(lines, k)):
-            found += 1
-    return found
+    return _settings_on_test_steps(text, _CONTINUE)
 
 
 def _block(lines: list[str], k: int) -> str:

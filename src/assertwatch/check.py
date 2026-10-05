@@ -14,6 +14,7 @@ from assertwatch.gitdiff import (
     diff_lines,
     files_defining,
     files_under,
+    read_bytes,
     read_text,
 )
 from assertwatch.model import Finding, TestFile
@@ -55,8 +56,8 @@ def check_diff(repo: Path, base: str, head: str | None = None) -> CheckResult:
                 FileChange(
                     old_path,
                     new_path,
-                    read_text(repo, base, old_path) if old_path else None,
-                    read_text(repo, head, new_path) if new_path else None,
+                    _read_guard(repo, base, old_path),
+                    _read_guard(repo, head, new_path),
                 )
             )
         old = _load(repo, base, old_path, config)
@@ -87,6 +88,13 @@ def check_diff(repo: Path, base: str, head: str | None = None) -> CheckResult:
     # A renamed file counts once, under its head path.
     paths = {f.path for f in head_files} | {f.path for f in base_files if f.path not in path_map}
     return CheckResult(findings, errors, len(paths), unreadable)
+
+
+def _read_guard(repo: Path, ref: str | None, path: str | None) -> str | None:
+    """A guard or build file as text, even when it holds NUL bytes or invalid UTF-8: reading
+    it as missing would let a change to it pass unchecked. A leading BOM is dropped."""
+    data = read_bytes(repo, ref, path) if path else None
+    return None if data is None else data.decode("utf-8", "replace").removeprefix("\ufeff")
 
 
 def _unchanged_copies(

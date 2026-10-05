@@ -159,7 +159,8 @@ def test_pom_with_a_dtd_or_broken_xml_fails_closed():
     )
     assert ["can't be read" in m for m in file_rules("pom.xml", POM, after)] == [True]
     assert ["can't be read" in m for m in file_rules("pom.xml", POM, "<project>")] == [True]
-    assert file_rules("pom.xml", "<project>", "<project>") == []  # unreadable before too
+    # Unreadable on both sides still fails closed: Maven may read what this parser cannot.
+    assert len(file_rules("pom.xml", "<project>", "<project> ")) == 1
     assert file_rules("pom.xml", POM, None) == []  # deleted
 
 
@@ -370,13 +371,13 @@ PARENT = """\
 def test_pom_module_dropped():
     def found(after, *others):
         files = [FileChange("pom.xml", "pom.xml", PARENT, after), *others]
-        return [f.message for f in run_rules([], [], files=files)]
+        return [f.message for f in run_rules([], [], files=files, tests_under=lambda d: False)]
 
     dropped = PARENT.replace("    <module>web</module>\n", "")
     assert found(dropped) == ["pom.xml no longer builds module `web`, so its tests don't run."]
     into_profile = dropped.replace("<module>it-tests", "<module>web</module><module>it-tests")
     assert "only in profile `it`" in found(into_profile)[0]
-    # The module itself deleted or moved in the same change: nothing is hidden.
+    # The module deleted or moved with its tests in the same change: nothing is hidden.
     web = "<project><artifactId>web</artifactId></project>"
     assert found(dropped, FileChange("web/pom.xml", None, web, None)) == []
     assert found(dropped, FileChange("web/pom.xml", "apps/web/pom.xml", web, web)) == []
@@ -709,3 +710,223 @@ def test_more_expression_and_quiet_cases():
     docs = "on: [push]\njobs:\n  d:\n    steps:\n      - run: mkdocs build\n"
     manual_docs = docs.replace("[push]", "[workflow_dispatch]")
     assert file_rules(".github/workflows/docs.yml", docs, manual_docs) == []
+
+
+# --- fail closed, parser differentials, bounded work (security review of c0d6977) --------
+
+
+def test_module_drop_without_a_way_to_look_fails_closed():
+    dropped = PARENT.replace("    <module>web</module>\n", "")
+    files = [
+        FileChange("pom.xml", "pom.xml", PARENT, dropped),
+        FileChange("web/pom.xml", None, "<project/>", None),
+    ]
+    assert len(run_rules([], [], files=files)) == 1  # tests_under unknown: assume tests left
+
+
+def test_pom_unreadable_at_base_compares_with_nothing():
+    after = POM.replace(PROPS, PROPS + "    <skipTests>true</skipTests>\n")
+    assert "`skipTests`" in " ".join(file_rules("pom.xml", "<project", after))
+
+
+def test_pom_nested_too_deep_is_unreadable():
+    deep = "<project>" + "<a>" * 5000 + "</a>" * 5000 + "</project>"
+    assert ["can't be read" in m for m in file_rules("pom.xml", POM, deep)] == [True]
+
+
+def test_too_large_files_fail_closed():
+    pad = "x" * (1_000_001)
+    assert len(file_rules("pom.xml", POM, POM + f"<!-- {pad} -->")) == 1
+    assert len(file_rules("build.gradle", GROOVY, GROOVY + f"// {pad}\n")) == 1
+    assert len(file_rules(".github/workflows/ci.yml", WORKFLOW, WORKFLOW + f"# {pad}\n")) == 1
+    assert len(file_rules(".mvn/maven.config", "", pad)) == 1
+    script = "mvn -B verify\n"
+    assert len(file_rules("Jenkinsfile", script, script + f"// {pad}\n")) == 1
+    long = GROOVY + "\next.notes = '" + "y" * 9000 + "'\n"
+    assert ["can't be checked" in m for m in file_rules("build.gradle", GROOVY, long)] == [True]
+
+
+def test_a_crash_while_checking_blocks(monkeypatch):
+    from assertwatch.rules import build_config
+
+    def boom(*args, **kwargs):
+        raise RuntimeError("bug")
+        yield  # pragma: no cover
+
+    monkeypatch.setattr(build_config, "gradle", boom)
+    assert ["could not be checked" in m for m in file_rules("build.gradle", "", "")] == [True]
+
+
+@pytest.mark.parametrize(
+    "after",
+    [
+        "MAVEN_ARGS=-DskipTests ./mvnw -B verify",
+        "./mvnw -B verify --define skipTests",
+        "./mvnw -B verify --define=maven.test.skip=true",
+        "./mvnw -B verify -fn",
+        "./mvnw -B verify --fail-never",
+        "./mvnw -B verify $(cat .ci-args)",
+        "./mvnw -B verify `cat .ci-args`",
+        "./mvnw -B verify $EXTRA",
+        "./gradlew build -xtest",
+    ],
+)
+def test_ci_command_spellings(after):
+    changed = WORKFLOW.replace("./mvnw -B verify", after)
+    assert len(file_rules(".github/workflows/ci.yml", WORKFLOW, changed)) == 1, after
+
+
+def test_ci_option_variables_from_expressions():
+    env = WORKFLOW.replace("    steps:", "    env:\n      MAVEN_ARGS: ${{ vars.ARGS }}\n    steps:")
+    assert len(file_rules(".github/workflows/ci.yml", WORKFLOW, env)) == 1
+    exported = 'export MAVEN_OPTS="$EXTRA"\n./mvnw -B verify\n'
+    assert len(file_rules("ci/build.sh", "./mvnw -B verify\n", exported)) == 1
+
+
+ANCHORED = """\
+name: ci
+on: &events [push, pull_request]
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - run: ./mvnw -B verify
+"""
+
+
+def test_yaml_anchors_and_aliases():
+    # The trigger list kept as an alias, its anchor changed elsewhere.
+    split = ANCHORED.replace(
+        "on: &events [push, pull_request]", "x-events: &events [push]\non: *events"
+    )
+    manual = split.replace("x-events: &events [push]", "x-events: &events [workflow_dispatch]")
+    assert file_rules(".github/workflows/ci.yml", ANCHORED, split) == []
+    assert len(file_rules(".github/workflows/ci.yml", split, manual)) == 1
+    # continue-on-error merged into the test step from an anchored mapping.
+    defaults = ANCHORED.replace(
+        "jobs:\n", "x-lenient: &lenient\n  continue-on-error: true\njobs:\n"
+    ).replace(
+        "      - run: ./mvnw -B verify", "      - <<: *lenient\n        run: ./mvnw -B verify"
+    )
+    assert len(file_rules(".github/workflows/ci.yml", ANCHORED, defaults)) == 1
+
+
+def test_many_conditions_are_bounded_and_fail_closed():
+    many = WORKFLOW + "".join(f"      - if: false\n        run: echo {i}\n" for i in range(300))
+    assert len(file_rules(".github/workflows/ci.yml", WORKFLOW, many)) == 1
+
+
+@pytest.mark.parametrize(
+    "change",
+    [
+        (PROPS, PROPS + "    <a>tr</a><b>ue</b>\n    <skipTests>${a}${b}</skipTests>\n"),
+        (
+            "<artifactId>maven-surefire-plugin</artifactId>",
+            "<artifactId>${sf}</artifactId><configuration><skip>true</skip></configuration>",
+        ),
+        (
+            "    </plugins>",
+            "      <plugin><artifactId>jacoco-maven-plugin</artifactId><executions><execution>"
+            "<configuration><rules><rule><element>BUNDLE</element><limits><limit>"
+            "<counter>LINE</counter><value>COVEREDRATIO</value><minimum>0.10</minimum>"
+            "</limit></limits></rule></rules></configuration></execution></executions>"
+            "</plugin>\n    </plugins>",
+        ),
+    ],
+    ids=["concatenated-property", "artifact-id-property", "duplicate-plugin-lower-limit"],
+)
+def test_pom_read_as_maven_reads_it(change):
+    after = POM.replace(*change)
+    if "${sf}" in after:
+        after = after.replace(PROPS, PROPS + "    <sf>maven-surefire-plugin</sf>\n")
+    assert len(file_rules("pom.xml", POM, after)) >= 1
+
+
+def test_gradle_read_as_gradle_reads_it():
+    escaped = GROOVY.replace(JUNIT, JUNIT + "    en\\u0061bled = false\n")
+    assert len(file_rules("build.gradle", GROOVY, escaped)) == 1
+    quoted = GROOVY.replace(
+        JUNIT, JUNIT + '    systemProperty("a", "b=c"); ignoreFailures = true\n'
+    )
+    assert len(file_rules("build.gradle", GROOVY, quoted)) == 1
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "'''" + "'" * 200_000,
+        "/*" * 200_000,
+        '"' * 200_000,
+        "test {\n" + "a" * 200_000,
+        "x = " + "(" * 200_000,
+        "setEnabled(" * 50_000,
+        "a.set(" * 50_000,
+    ],
+    ids=["triple-quote", "comments", "quotes", "long-word", "parens", "setters", "property-sets"],
+)
+def test_gradle_scan_is_linear(text):
+    import time
+
+    start = time.perf_counter()
+    file_rules("build.gradle", GROOVY, text)
+    assert time.perf_counter() - start < 3
+
+
+@pytest.mark.parametrize(
+    "text",
+    ["<!DOCTYPE [" * 100_000, "<project>" + "${" * 100_000 + "</project>"],
+    ids=["doctypes", "references"],
+)
+def test_pom_scan_is_bounded(text):
+    import time
+
+    start = time.perf_counter()
+    file_rules("pom.xml", POM, text)
+    assert time.perf_counter() - start < 3
+
+
+def test_guard_files_with_nul_or_bom_are_still_checked(tmp_path):
+    from gitutil import commit_all, git, write
+
+    from assertwatch.check import check_diff
+
+    git(tmp_path, "init", "-q", "-b", "main")
+    write(tmp_path, "pom.xml", POM)
+    write(tmp_path, "build.gradle", GROOVY)
+    commit_all(tmp_path, "base")
+    skip = POM.replace(PROPS, PROPS + "    <skipTests>true</skipTests>\n")
+    write(tmp_path, "pom.xml", ("﻿" + skip).encode())
+    write(tmp_path, "build.gradle", (GROOVY + "test { ignoreFailures = true }\n// \0\n").encode())
+    found = [f.message for f in check_diff(tmp_path, "HEAD").findings]
+    assert any("`skipTests`" in m for m in found), found
+    assert any("ignoreFailures" in m for m in found), found
+
+
+FAILSAFE = """
+      <plugin>
+        <groupId>org.apache.maven.plugins</groupId>
+        <artifactId>maven-failsafe-plugin</artifactId>
+        <configuration>
+          <includes>
+            <include>INCLUDE</include>
+          </includes>
+        </configuration>
+      </plugin>
+"""
+
+
+def test_failsafe_includes():
+    def with_failsafe(include):
+        return POM.replace(
+            "    <plugins>\n", "    <plugins>\n" + FAILSAFE.replace("INCLUDE", include)
+        )
+
+    # a new Failsafe plugin adds integration tests: nothing ran under it before
+    assert file_rules("pom.xml", POM, with_failsafe("**/*IT.java")) == []
+    # its own defaults, not Surefire's: an explicit default isn't narrower
+    no_includes = with_failsafe("**/*IT.java").replace(
+        "          <includes>\n            <include>**/*IT.java</include>\n          </includes>\n",
+        "",
+    )
+    assert file_rules("pom.xml", no_includes, with_failsafe("**/*IT.java")) != []  # drops IT*
+    assert file_rules("pom.xml", with_failsafe("**/*IT.java"), with_failsafe("**/Smoke*IT.java"))

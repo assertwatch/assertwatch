@@ -33,6 +33,8 @@ CI_SCRIPTS = (
     "justfile",
     "*.sh",
     "*.bash",
+    "action.yml",  # composite actions run steps too
+    "action.yaml",
 )
 
 

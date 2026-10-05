@@ -326,3 +326,18 @@ possible later warning.
 findings the same as at 6fedf88; AW006 fires on none of the 2,218 commits. Real tests in
 these projects mock collaborators (clocks, I/O, a repository), which AW006 leaves alone: it
 reports a stand-in only when the test also calls it itself and used to call it for real.
+
+## AW009 on Maven, Gradle and CI files
+
+**Replay** at the AW009 commit (both languages, against 6fedf88): Python unchanged at 133
+blocking; Java 53 -> 55. Both new blocks are AW009 and labelled:
+
+| Project | Commit | Label | What happened |
+|---|---|---|---|
+| jsoup | `4848432864` | intended | A soak test moved into a `long-running` group that Failsafe excludes unless a profile is on |
+| jackson-core | `38da105f31` | false positive, *fixed* | A Failsafe plugin added for a new IT was compared with Surefire's default includes (`refactor-j41`) |
+
+After the fix: Java 54 blocking (both languages otherwise unchanged), so the Java rates in
+"Current rates" move by one intended block. AW009 reads build and CI text without running
+Maven, Gradle or the CI runner, so a reader-versus-tool difference can still let a loosening
+through; an unreadable or oversized file blocks rather than passing.

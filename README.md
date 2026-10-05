@@ -247,9 +247,9 @@ suppress anything; they are reported as AW000 for a human to approve.
 `make eval` replays the labelled corpus in [`corpus/cases/`](corpus/cases): small, complete
 changes, each one a cheat that should be caught or a refactor that shouldn't be blocked. The
 refactors are modeled on real commits from open-source projects that earlier versions
-blocked. Results today: **97 of 105 cheats caught, 1 of 70 refactors blocked** (92% recall,
-1% false positives on refactors; 2 more refactors get a warning). That includes 59 Java
-cheats and 35 Java refactors; two of the Java cheats are known misses (below).
+blocked. Results today: **116 of 122 cheats caught, 1 of 79 refactors blocked** (95% recall,
+1% false positives on refactors; 2 more refactors get a warning). That includes 71 Java
+cheats and 39 Java refactors; two of the Java cheats are known misses (below).
 
 - **Missed:** a check for exactly two warnings swapped one-for-one for
   `pytest.warns`, which passes on one: the count stays the same and nothing compares the two.
