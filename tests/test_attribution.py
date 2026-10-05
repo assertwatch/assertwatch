@@ -1,5 +1,6 @@
 import io
 import json
+import re
 from pathlib import Path
 
 import pytest
@@ -433,3 +434,14 @@ def test_text_report_shows_author_and_routing(repo):
     text = render(Report(f"{sha}~1", sha, result.findings), "text")
     assert "AW004 [warn]" in text
     assert "    author: human (commit" in text and "block lowered to warn by [routing]" in text
+
+
+@pytest.mark.parametrize("bot", ["pre-commit-ci", "dependabot", "renovate"])
+def test_formatting_and_dependency_bots_are_not_agents(bot):
+    from assertwatch.attribution import DEFAULT_AI_PATTERNS
+
+    trailer = f"Co-authored-by: {bot}[bot] <1+{bot}[bot]@users.noreply.github.com>"
+    agent = "Co-authored-by: copilot-swe-agent[bot] <1+copilot-swe-agent[bot]@x.invalid>"
+    patterns = [re.compile(p, re.IGNORECASE | re.MULTILINE) for p in DEFAULT_AI_PATTERNS]
+    assert not any(p.search(trailer) for p in patterns)
+    assert any(p.search(agent) for p in patterns)

@@ -40,7 +40,10 @@ DEFAULT_AI_PATTERNS = (
     r"cursoragent@cursor\.com",
     r"\+copilot@users\.noreply\.github\.com",  # GitHub's Copilot coding agent
     r"@ampcode\.com",
-    r"\[bot\]\s*[<@]",  # GitHub App accounts: copilot-swe-agent[bot], devin-ai-integration[bot]
+    # GitHub App accounts: copilot-swe-agent[bot], devin-ai-integration[bot]; not the
+    # formatting and dependency bots, which don't write tests (pre-commit-ci co-authors 27
+    # attrs commits in the replay)
+    r"(?<!pre-commit-ci)(?<!dependabot)(?<!renovate)\[bot\]\s*[<@]",
     r"\(aider\)",  # aider appends this to the author name
     r"^aider: ",
 )

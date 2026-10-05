@@ -257,7 +257,8 @@ evidence, strongest first:
 3. **Commit identities and trailers** of the commits in the range that touched the file:
    `Co-Authored-By: Claude` (and Copilot, Codex, Cursor, Devin, Jules, Gemini, Aider, ...),
    "Generated with Claude Code", agent accounts (GitHub's Copilot agent, Cursor's agent) and
-   any `[bot]` account. Add your own regexes with `ai_patterns`.
+   any `[bot]` account except the formatting and dependency bots (pre-commit-ci, Dependabot,
+   Renovate). Add your own regexes with `ai_patterns`.
 4. A file changed only by commits with none of these is `human`; one changed by both kinds is
    `mixed`; uncommitted changes outside the hook, or no commit at all, are `unknown`.
 
@@ -290,7 +291,7 @@ in your repo without a reliable trailer, or you can't rule that out, set `human 
 `make eval` replays the labelled corpus in [`corpus/cases/`](corpus/cases): small, complete
 changes, each one a cheat that should be caught or a refactor that shouldn't be blocked. The
 refactors are modeled on real commits from open-source projects that earlier versions
-blocked. Results today: **116 of 122 cheats caught, 1 of 79 refactors blocked** (95% recall,
+blocked. Results today: **118 of 124 cheats caught, 1 of 79 refactors blocked** (95% recall,
 1% false positives on refactors; 2 more refactors get a warning). That includes 71 Java
 cheats and 39 Java refactors; two of the Java cheats are known misses (below). Cases are
 committed as an AI agent's change unless they say otherwise; two check routing (a human's
