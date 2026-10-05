@@ -522,6 +522,59 @@ class CartTest {
     assert "AW002" not in rules(after, HELPER_BASE)
 
 
+NEW_CART = "        Cart cart = new Cart();\n"
+TOTAL_CHECK = "        assertEquals(1.5, cart.total());\n"
+
+
+@pytest.mark.parametrize(
+    "stub",
+    [
+        "        Cart cart = mock(Cart.class);\n        when(cart.total()).thenReturn(1.5);\n",
+        "        Cart cart = spy(new Cart());\n        doReturn(1.5).when(cart).total();\n",
+        "        Cart cart = mock(Cart.class);\n        given(cart.total()).willReturn(1.5);\n",
+    ],
+    ids=["when", "do-return", "given"],
+)
+def test_aw006_code_under_test_stubbed(stub):
+    assert rules(swap(NEW_CART, stub)) == ["AW006"]
+
+
+@pytest.mark.parametrize(
+    "stub",
+    [
+        NEW_CART + '        when(prices.of("apple")).thenReturn(0.5);\n',
+        NEW_CART
+        + "        Clock clock = mock(Clock.class);\n        when(clock.now()).thenReturn(0L);\n",
+    ],
+    ids=["collaborator", "clock"],
+)
+def test_aw006_dependency_stubbed_is_quiet(stub):
+    assert rules(swap(NEW_CART, stub)) == []
+
+
+def test_aw006_stub_in_dead_code_is_ignored():
+    dead = NEW_CART + "        if (false) { when(cart.total()).thenReturn(1.5); }\n"
+    assert rules(swap(NEW_CART, dead)) == []
+
+
+STUBBED = "        Cart cart = mock(Cart.class);\n        when(cart.total()).thenReturn(1.5);\n"
+
+
+@pytest.mark.parametrize(
+    "check",
+    [
+        "        assertEquals(1.5, Receipt.of(cart).total());\n",  # another object's total()
+        "        if (false) { cart.total(); }\n"
+        "        assertEquals(1.5, Receipt.of(cart).total());\n",
+        "        assertEquals(1.5, Totals.sum(cart, total(cart)));\n",  # a static total(Cart)
+    ],
+    ids=["other-receiver", "direct-call-only-in-dead-code", "static-helper"],
+)
+def test_aw006_stub_used_by_other_code_is_quiet(check):
+    after = swap(NEW_CART, STUBBED).replace(TOTAL_CHECK, check)
+    assert rules(after) == []
+
+
 TOTAL = "        assertEquals(1.5, cart.total());\n"
 
 

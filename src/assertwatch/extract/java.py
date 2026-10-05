@@ -780,6 +780,8 @@ def _scan_body(stmts: list[Token], case: TestCase, helpers: _Helpers, params: li
         and stmts[k].text not in _KEYWORDS
         and stmts[k].text not in helpers.defs
     )
+    case.mocks.extend(f"{recv}.{method}" for recv, method, _ in _stubs(stmts, dead))
+    case.mocked_calls = _stubbed_and_called(stmts, dead)
     case.call_count = sum(
         1
         for k in range(len(stmts) - 1)
@@ -789,6 +791,57 @@ def _scan_body(stmts: list[Token], case: TestCase, helpers: _Helpers, params: li
         and not _is_assert_call(stmts[k].text)
         and stmts[k].text not in _SKIP_CALLS
     )
+
+
+_STUB_CALLS = frozenset({"when", "given"})  # Mockito `when(...)`, BDDMockito `given(...)`
+
+
+def _stubs(stmts: list[Token], dead: list[bool]) -> Iterator[tuple[str, str, int]]:
+    """Mockito stubs as (receiver, method, index of the method token): `when(cart.total())`,
+    `given(cart.total())`, and `doReturn(x).when(cart).total()`."""
+    for k, tok in enumerate(stmts):
+        if dead[k] or tok.text not in _STUB_CALLS or k + 1 >= len(stmts):
+            continue
+        if stmts[k + 1].text != "(":
+            continue
+        close = _close(stmts, k + 1)  # the matching ")"
+        inside = stmts[k + 2 : close]
+        if (
+            len(inside) >= 4
+            and inside[0].kind == "id"
+            and inside[1].text == "."
+            and inside[2].kind == "id"
+            and inside[3].text == "("
+        ):
+            yield inside[0].text, inside[2].text, k + 4
+        elif (
+            len(inside) == 1
+            and inside[0].kind == "id"
+            and close + 3 < len(stmts)
+            and stmts[close + 1].text == "."
+            and stmts[close + 2].kind == "id"
+            and stmts[close + 3].text == "("
+        ):
+            yield inside[0].text, stmts[close + 2].text, close + 2
+
+
+def _stubbed_and_called(stmts: list[Token], dead: list[bool]) -> frozenset[str]:
+    """Methods the test stubs and then calls itself on the same object, outside the stub."""
+    stubbed = list(_stubs(stmts, dead))
+    at = {i for _, _, i in stubbed}
+    found: set[str] = set()
+    for recv, method, _ in stubbed:
+        for k in range(2, len(stmts) - 1):
+            if (
+                k not in at
+                and not dead[k]
+                and stmts[k].text == method
+                and stmts[k + 1].text == "("
+                and stmts[k - 1].text == "."
+                and stmts[k - 2].text == recv
+            ):
+                found.add(method)
+    return frozenset(found)
 
 
 def _helper_calls(stmts: list[Token], dead: list[bool], helpers: _Helpers) -> Iterator[int]:

@@ -319,3 +319,10 @@ doesn't read (it compares a test with its base version). One of those is a broke
 commons-lang `9f89fd462` puts `fail(...)` inside a `try` whose `catch (Throwable expected)`
 catches that failure too, so the test can't fail. Reporting that shape in new tests is a
 possible later warning.
+
+## AW006 (code under test mocked)
+
+**Replay** at the AW006 commit: no change, Python 133 and Java 53 blocking, every commit's
+findings the same as at 6fedf88; AW006 fires on none of the 2,218 commits. Real tests in
+these projects mock collaborators (clocks, I/O, a repository), which AW006 leaves alone: it
+reports a stand-in only when the test also calls it itself and used to call it for real.
