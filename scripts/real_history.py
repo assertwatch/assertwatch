@@ -9,7 +9,8 @@ Clones go to .cache/real-history/ (gitignored) and are reused. The projects and 
 each walk starts from are pinned in real_history.toml, so a fresh checkout replays the
 same commits. `block` is the rules' verdict; each finding also records its author (from the
 commit's identity and trailers), and `routed_block` whether it still blocks under the default
-[routing] (human = "warn"). This is development tooling: it needs the network once, to clone.
+[routing]. The projects list no human_authors, so their commits without an AI signal are
+"unknown" and keep blocking. This is development tooling: it needs the network once, to clone.
 """
 
 from __future__ import annotations

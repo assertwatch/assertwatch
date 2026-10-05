@@ -214,9 +214,10 @@ lowered), `.mvn/maven.config`, and `mvn`/`gradle` runs in GitHub workflows, othe
 and shell scripts (`-DskipTests`, `-Dmaven.test.failure.ignore`, `-x test`, a run that no
 longer tests, `if: false`, a test workflow deleted or no longer run on push or pull
 request). Most Java corpus cases are written for the purpose, not modeled on real commits.
-On the last 300 test-touching commits of commons-lang, jsoup and jackson-core (900), 53
-block; labelling a sample puts about 2.8% of commits blocked wrongly (Python: about 2.6%),
-mostly tests moved between files and rewritten
+On the last 300 test-touching commits of commons-lang, jsoup and jackson-core (900), 54
+block; an estimated 2.7% of commits are blocked wrongly (28 of the 54 blocks labelled, the
+rest estimated from a sample; Python: about 2.6%), mostly tests moved between files and
+rewritten
 ([`corpus/real-history.md`](corpus/real-history.md#java)). Only what JUnit runs counts as a test: a test
 made private, static or non-void, moved into an inner class without `@Nested`, or into a
 top-level class whose name Surefire doesn't select, looks removed. Unicode escapes
@@ -259,7 +260,9 @@ evidence, strongest first:
    "Generated with Claude Code", agent accounts (GitHub's Copilot agent, Cursor's agent) and
    any `[bot]` account except the formatting and dependency bots (pre-commit-ci, Dependabot,
    Renovate). Add your own regexes with `ai_patterns`.
-4. A file changed only by commits with none of these is `human`; one changed by both kinds is
+4. A commit with none of these is `human` **only if its author email is listed** in
+   `human_authors`. Otherwise it is `unknown`: in CI most agent commits carry no signal at all,
+   so a missing trailer is no evidence of a human. A file changed by AI and other commits is
    `mixed`; uncommitted changes outside the hook, or no commit at all, are `unknown`.
 
 Evidence only ever adds AI: a record that claims a human never outweighs a trailer. Routing,
@@ -269,10 +272,16 @@ read from the base like the rest of the config, then decides what a blocking fin
 [routing]
 ai = "block"        # default
 mixed = "block"
-unknown = "block"
+unknown = "block"   # default; see below before setting "warn"
 human = "warn"      # default; set "block" to block human changes too
+human_authors = ["dev@example.com", "*@team.example.com"]  # emails (globs, any case)
 ai_patterns = ["^my-agent <agent@example[.]com>$"]   # optional, added to the defaults
 ```
+
+With no `human_authors`, nothing is `human`, so every block stays a block: positive evidence
+can lower a severity, a missing signal can't. `unknown = "warn"` is an opt-in that is safe
+only when every agent in your organization runs the Claude Code hook (or otherwise stamps its
+commits reliably), so that an unstamped commit really implies a human.
 
 A routed finding says so (`block lowered to warn by [routing]`), and `--fail-on warn` still
 fails on it. Proposed waivers (AW000) are never routed. Anything invalid in `[routing]` (an
@@ -280,22 +289,26 @@ unknown value, a misspelled key), or a config file that doesn't parse, means "bl
 author. A merge commit counts as touching what it changed against its first parent, so edits
 made while resolving a merge are attributed to whoever made the merge.
 
-**The `human` default trusts what commits say about themselves.** Author names and trailers
-are written by whoever makes the commit: an agent that commits under your git identity
+**`human_authors` trusts what commits say about themselves.** Author emails and trailers are
+written by whoever makes the commit: an agent that commits under a listed person's email
 without a trailer (some setups strip it) reads as `human` in CI, and its weakenings become
-warnings. Only the hook's session evidence can't be rewritten by the agent. If agents commit
-in your repo without a reliable trailer, or you can't rule that out, set `human = "block"`.
+warnings. Only the hook's session evidence can't be rewritten by the agent. List only people
+whose machines don't let agents commit as them, or leave the list empty.
+
+In short: report-only by default; teams can block, with author-based downgrades where
+authorship is provable.
 
 ## How well it works
 
 `make eval` replays the labelled corpus in [`corpus/cases/`](corpus/cases): small, complete
 changes, each one a cheat that should be caught or a refactor that shouldn't be blocked. The
 refactors are modeled on real commits from open-source projects that earlier versions
-blocked. Results today: **118 of 124 cheats caught, 1 of 79 refactors blocked** (95% recall,
+blocked. Results today: **119 of 125 cheats caught, 1 of 79 refactors blocked** (95% recall,
 1% false positives on refactors; 2 more refactors get a warning). That includes 71 Java
 cheats and 39 Java refactors; two of the Java cheats are known misses (below). Cases are
-committed as an AI agent's change unless they say otherwise; two check routing (a human's
-weakening warns, the same change with a `Co-Authored-By: Claude` trailer blocks).
+committed as an AI agent's change unless they say otherwise; three check routing (a listed
+human's weakening warns; the same change by an unlisted author, or with a
+`Co-Authored-By: Claude` trailer, blocks).
 
 - **Missed:** a check for exactly two warnings swapped one-for-one for
   `pytest.warns`, which passes on one: the count stays the same and nothing compares the two.
@@ -316,7 +329,8 @@ weakening warns, the same change with a `Co-Authored-By: Claude` trailer blocks)
   it.
 
 Read these numbers with care. The corpus is small, and most of it was written by the same
-people as the rules, after the rules. Cheats an agent might invent that we haven't thought of
+people as the rules, after the rules: only 8 of the 125 cheats (and 32 of the 79 refactors)
+are modeled on a real commit. Cheats an agent might invent that we haven't thought of
 aren't in it. Cases that fail on purpose are marked `known` in their file, and the test
 suite fails when one starts passing, so the numbers here stay current.
 

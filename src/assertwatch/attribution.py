@@ -8,15 +8,18 @@ Each finding's file gets an author class, from the strongest evidence available:
    commit in the range and the file, with an "ai" or "mixed" contributor. Read only.
 3. Commit identities and trailers: `Co-Authored-By: Claude`, agent and `[bot]` accounts, and
    the `[routing] ai_patterns` of the config.
-4. Otherwise a file changed only by commits without those signals is "human"; one touched by
-   both kinds is "mixed"; uncommitted changes outside the hook, or no commit, are "unknown".
+4. A commit without those signals is "human" only when its author email is listed in
+   `[routing] human_authors`; otherwise it is "unknown": in CI most agent commits carry no
+   signal, so a missing signal is no evidence of a human. A file touched by AI and other
+   commits is "mixed"; uncommitted changes outside the hook, or no commit, are "unknown".
 
 Evidence only ever adds AI: a record or trailer claiming a human never outweighs an AI signal.
-Identities and trailers are self-reported, so anyone who can commit can forge "human"; the
-hook's session evidence is the only kind an agent can't rewrite.
+Identities and trailers are self-reported, so anyone who can commit can forge a listed human's
+email; the hook's session evidence is the only kind an agent can't rewrite.
 
 Routing then lowers a blocking finding to a warning when the config says so for its class
-(by default only "human"). It never raises a severity and never touches proposed waivers.
+(by default only "human", which needs the allowlist). It never raises a severity and never
+touches proposed waivers.
 """
 
 from __future__ import annotations
@@ -24,6 +27,7 @@ from __future__ import annotations
 import json
 import re
 from dataclasses import dataclass, field, replace
+from fnmatch import fnmatchcase
 from pathlib import Path
 
 from assertwatch.config import Config
@@ -70,6 +74,7 @@ class Commit:
     ident: str  # "Author Name <email>", for the report
     paths: frozenset[str]
     ai_signal: str | None = None  # what marked it as AI, if anything
+    listed: bool = False  # its author email is in [routing] human_authors
     trace: dict[str, str] = field(default_factory=dict)  # path -> Agent Trace contributor
 
 
@@ -85,6 +90,7 @@ class Attributor:
             return Attribution("ai", f"Claude Code session since {self.session[:12]}")
         ai: list[str] = []
         human: list[Commit] = []
+        unlisted: list[Commit] = []  # no AI signal, but no evidence of a human either
         unknown: list[str] = []
         for commit in self.commits:
             if path not in commit.paths:
@@ -95,24 +101,28 @@ class Attributor:
                 signal = f"Agent Trace record: {traced}"
             if signal is not None:
                 ai.append(f"commit {commit.sha[:12]}: {signal}")
-            else:
+            elif commit.listed:
                 human.append(commit)
+            else:
+                unlisted.append(commit)
         if path in self.uncommitted:
             if self.hook:
                 ai.append("uncommitted changes in a Claude Code session")
             else:
                 unknown.append("uncommitted changes")
-        if human and self.hook:
-            unknown.append(f"{_human(human)}, made in an agent's workspace")
-            human = []
-        if ai and human:
-            return Attribution("mixed", f"{ai[0]}; also {_human(human)}")
+        if (human or unlisted) and self.hook:
+            unknown.append(f"{_human(human + unlisted)}, made in an agent's workspace")
+            human = unlisted = []
+        if ai and (human or unlisted):
+            return Attribution("mixed", f"{ai[0]}; also {_human(human + unlisted)}")
         if ai:
             return Attribution("ai", ai[0])
         if unknown:
             return Attribution("unknown", unknown[0])
+        if unlisted:
+            return Attribution("unknown", f"{_human(unlisted)}, author not in human_authors")
         if human:
-            return Attribution("human", _human(human))
+            return Attribution("human", f"{_human(human)}, author in human_authors")
         return Attribution("unknown", "no commit in the range changed it")
 
 
@@ -138,11 +148,19 @@ def attributor(
     for extra in config.ai_patterns:
         patterns.append(re.compile(extra, re.IGNORECASE | re.MULTILINE))
     commits = _commits(repo, base, head or "HEAD", patterns)
+    for commit in commits:
+        commit.listed = is_listed(commit.ident, config.human_authors)
     traces = _traces(repo, head)
     for commit in commits:
         commit.trace = traces.get(commit.sha, {})
     uncommitted = _uncommitted(repo) if head is None else frozenset()
     return Attributor(commits, uncommitted, hook=hook)
+
+
+def is_listed(ident: str, human_authors: tuple[str, ...]) -> bool:
+    """Whether the email of "Name <email>" matches a human_authors glob (any case)."""
+    email = ident.rpartition("<")[2].removesuffix(">").strip().lower()
+    return bool(email) and any(fnmatchcase(email, pattern) for pattern in human_authors)
 
 
 def route_findings(findings: list[Finding], who: Attributor, config: Config) -> list[Finding]:

@@ -10,7 +10,8 @@ both sides to a throwaway git repository and runs the same check as `assertwatch
 A cheat counts as caught when any finding (block or warn) reports it, and blocked when a
 block finding does. A refactor is a false positive when a block finding fires; warnings on
 refactors are counted separately. The change is committed as an AI agent's unless the case
-says `author = "human"`, so findings keep the rules' severities by default. Cases marked
+says `author = "human"`, so findings keep the rules' severities by default; a human case is
+routed as `human` only if its base config lists it in `[routing] human_authors`. Cases marked
 `known = "..."` are current misses or false positives, kept so the numbers stay honest;
 tests/test_corpus.py fails if one starts passing, so the mark gets removed.
 """
