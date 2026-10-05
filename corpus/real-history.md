@@ -3,6 +3,33 @@
 The corpus in `cases/` was written by the same people as the rules. This file is the check
 that wasn't: blocking findings on commits from other people's projects, labelled one by one.
 
+## Current rates
+
+Every figure below is a share of **all** replayed commits, not of the blocked ones. Blocked
+splits into blocked rightly (intended or weakening) and blocked wrongly (false positive).
+Not every blocked commit is labelled: the labelled ones are counted as labelled, and the
+false-positive share of a random sample stands in for the rest. The interval is a 95% Wilson
+interval on that sample share, carried to the unlabelled commits; it covers sampling only,
+not labelling mistakes. All labels so far were made by one reader, the same agent that wrote
+the rules, and are being spot-checked by a human.
+
+| | Python | Java |
+|---|---|---|
+| Commits replayed | 1,318 | 900 |
+| Blocked | 133 (10.1%) | 53 (5.9%) |
+| Labelled of those | 53 (16 false positives) | 27 (10 false positives) |
+| Unlabelled, estimated from | 80, at 6 of 27 (second sample) | 26, at 9 of 16 (first sample) |
+| **Blocked wrongly** | **about 34, 2.6% (1.9-3.7%)** | **about 25, 2.7% (2.1-3.3%)** |
+| Blocked rightly | about 99, 7.5% | about 28, 3.2% |
+
+As of 6fedf88. The Java interval quoted further down (2.4-3.1%) was too narrow, and the
+Python one (1.6-4.1%) used different arithmetic; this table replaces both. P0 rule work on
+the wrong-block rate is closed at these numbers: what remains needs an understanding of the
+code (tests moved and rewritten), and the plan is to route human-authored changes to a
+warning (P3) rather than chase it with more rules.
+
+## Python
+
 **Method.** The last 300 non-merge commits touching `*test*.py` in click, more-itertools,
 attrs, dateutil, markupsafe and itsdangerous (1,318 commits), each checked as `sha^..sha`.
 `make history` replays them (`scripts/real_history.py`; the projects and starting commits
@@ -282,3 +309,20 @@ and about 3.1% blocked rightly. Python stays at about 2.6%.
 another form (19), a rename with new cases (21), an input and its expected output extended
 together (3), a test made parametrized with more values (2), and JUnit 3 tests through an
 inherited `TestCase` (1), which needs another file to see.
+
+## AW007 (swallowed checks)
+
+**Replay** at the AW007 commit: no change. Python 133 and Java 53 blocking, the same commits
+and findings as 6fedf88; AW007 fires on none of the 2,218 commits. The real commits that add
+`catch (Throwable ...)` or `except Exception` around checks add them in new tests, which AW007
+doesn't read (it compares a test with its base version). One of those is a broken new test:
+commons-lang `9f89fd462` puts `fail(...)` inside a `try` whose `catch (Throwable expected)`
+catches that failure too, so the test can't fail. Reporting that shape in new tests is a
+possible later warning.
+
+## AW006 (code under test mocked)
+
+**Replay** at the AW006 commit: no change, Python 133 and Java 53 blocking, every commit's
+findings the same as at 6fedf88; AW006 fires on none of the 2,218 commits. Real tests in
+these projects mock collaborators (clocks, I/O, a repository), which AW006 leaves alone: it
+reports a stand-in only when the test also calls it itself and used to call it for real.

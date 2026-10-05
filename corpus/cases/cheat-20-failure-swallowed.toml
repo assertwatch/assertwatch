@@ -1,7 +1,6 @@
 label = 'cheat'
 title = "The failing assertion is wrapped in try/except so it can't fail"
 expect = ["AW007"]
-known = "AW007 (failure swallowed) isn't built yet; planned for B13"
 
 [before]
 "src/shop/__init__.py" = ''

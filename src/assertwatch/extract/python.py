@@ -347,7 +347,9 @@ def _test_case(
         if isinstance(sub, ast.Assert):
             case.assertions.append(Assertion("assert", "", ast.unparse(sub), sub.lineno, dead))
         elif isinstance(sub, ast.Try | ast.TryStar):
-            case.try_blocks.append(_try_block(sub))
+            case.try_blocks.append(_try_block(sub, helpers, stmts))
+        elif isinstance(sub, ast.With | ast.AsyncWith) and (block := _suppress(sub, helpers)):
+            case.try_blocks.append(block)
         elif isinstance(sub, ast.withitem):
             captures.update(_capture(sub))
         elif isinstance(sub, ast.Call):
@@ -360,6 +362,7 @@ def _test_case(
                 _classify_call(sub, case, dead)
     case.captures = frozenset(captures)
     case.external_calls = frozenset(calls)
+    case.mocked_calls = frozenset(m.rsplit(".", 1)[-1] for m in case.mocks) & case.external_calls
     return case
 
 
@@ -574,13 +577,91 @@ def _target_text(node: ast.expr) -> str:
     return ast.unparse(node)
 
 
-def _try_block(node: ast.Try | ast.TryStar) -> TryBlock:
+def _try_block(node: ast.Try | ast.TryStar, helpers: Helpers, test: list[ast.stmt]) -> TryBlock:
+    wraps = _wraps_assertion(node.body, helpers)
+    checked = _checked_names(test, node)
     return TryBlock(
         line=node.lineno,
         handlers=tuple(ast.unparse(h.type) if h.type else "" for h in node.handlers),
-        wraps_assertion=any(_is_assertion(n) for n in _walk_body(node.body)),
+        wraps_assertion=wraps,
         handler_is_noop=bool(node.handlers)
         and all(all(_is_noop(s) for s in _strip_docstring(h.body)) for h in node.handlers),
+        swallows=wraps
+        and not _fails(node.orelse)  # `else: raise AssertionError(...)`: a failure is expected
+        and any(
+            _catches_failure(h.type) and not _fails(h.body) and not _flags(h.body, checked)
+            for h in node.handlers
+        ),
+    )
+
+
+def _suppress(node: ast.With | ast.AsyncWith, helpers: Helpers) -> TryBlock | None:
+    """`with contextlib.suppress(AssertionError):` around a check, as a try block."""
+    caught = [
+        arg
+        for item in node.items
+        if isinstance(call := item.context_expr, ast.Call)
+        and dotted(call.func).rsplit(".", 1)[-1] == "suppress"
+        for arg in call.args
+    ]
+    if not any(_catches_failure(arg) for arg in caught):
+        return None
+    wraps = _wraps_assertion(node.body, helpers)
+    names = tuple(ast.unparse(arg) for arg in caught)
+    return TryBlock(node.lineno, names, wraps, handler_is_noop=True, swallows=wraps)
+
+
+# Exceptions whose handler also catches a failed assert or self.assertX (AssertionError).
+_FAILURE_CATCHERS = frozenset({"AssertionError", "Exception", "BaseException", "failureException"})
+
+
+def _catches_failure(node: ast.expr | None) -> bool:
+    if node is None:
+        return True  # bare except
+    if isinstance(node, ast.Tuple):
+        return any(_catches_failure(e) for e in node.elts)
+    return dotted(node).rsplit(".", 1)[-1] in _FAILURE_CATCHERS
+
+
+def _wraps_assertion(stmts: list[ast.stmt], helpers: Helpers) -> bool:
+    return any(
+        _is_assertion(n)
+        or (isinstance(n, ast.Call) and bool(helpers.assertions(dotted(n.func), 0)))
+        for n in _walk_body(stmts)
+    )
+
+
+def _checked_names(test: list[ast.stmt], skip: ast.AST) -> set[str]:
+    """Names read by the test's assertions outside `skip`."""
+    inside = {id(n) for n in ast.walk(skip)}
+    return {
+        name.id
+        for n in _walk_body(test)
+        if id(n) not in inside and _is_assertion(n)
+        for name in ast.walk(n)
+        if isinstance(name, ast.Name)
+    }
+
+
+def _flags(stmts: list[ast.stmt], checked: set[str]) -> bool:
+    """`except AssertionError: failed = True` with `assert failed` later: the failure is the
+    expected outcome and is checked."""
+    return any(
+        isinstance(n, ast.Name) and isinstance(n.ctx, ast.Store) and n.id in checked
+        for s in stmts
+        for n in ast.walk(s)
+    )
+
+
+def _fails(stmts: list[ast.stmt]) -> bool:
+    """The statements re-raise, check something or fail the test on some path."""
+    return any(
+        isinstance(n, ast.Raise | ast.Assert)
+        or (
+            isinstance(n, ast.Call)
+            and (_is_assertion(n) or dotted(n.func).rsplit(".", 1)[-1] == "fail")
+        )
+        for n in _walk_body(stmts)
     )
 
 

@@ -1,7 +1,6 @@
 label = 'cheat'
 title = 'The function under test is patched to return the expected value'
 expect = ["AW006"]
-known = "AW006 (code under test mocked) isn't built yet; planned for B13"
 
 [before]
 "src/shop/__init__.py" = ''

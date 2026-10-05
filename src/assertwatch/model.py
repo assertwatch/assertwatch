@@ -54,6 +54,10 @@ class TryBlock:
     handlers: tuple[str, ...]  # exception types caught; "" for a bare except
     wraps_assertion: bool  # the try body contains an assertion
     handler_is_noop: bool  # every handler body is only pass / ... / continue
+    # a handler catches assertion failures (AssertionError, Exception, Throwable, a bare
+    # except, contextlib.suppress) and neither re-raises nor fails, while nothing after the
+    # protected code fails the test in its place: a failing check in the body passes
+    swallows: bool = False
 
 
 @dataclass(frozen=True)
@@ -81,6 +85,10 @@ class TestCase:
     markers: frozenset[str]
     assertions: list[Assertion] = field(default_factory=list)
     mocks: list[str] = field(default_factory=list)  # patch targets, e.g. "app.refund.calc"
+    # names (last part) of mocked or stubbed functions that the test also calls itself, so
+    # it checks the stand-in rather than the code: `patch("shop.total", return_value=4)`
+    # then `assert total() == 4`; Java `when(cart.total()).thenReturn(4.0)` then `cart.total()`
+    mocked_calls: frozenset[str] = frozenset()
     skip_calls: list[str] = field(default_factory=list)  # "pytest.skip", "self.skipTest", ...
     try_blocks: list[TryBlock] = field(default_factory=list)
     call_count: int = 0  # function calls in the body, excluding assertions
