@@ -341,3 +341,21 @@ After the fix: Java 54 blocking (both languages otherwise unchanged), so the Jav
 "Current rates" move by one intended block. AW009 reads build and CI text without running
 Maven, Gradle or the CI runner, so a reader-versus-tool difference can still let a loosening
 through; an unreadable or oversized file blocks rather than passing.
+
+## Routing by author (P3)
+
+**Replay with `--routing`** (each commit's own author, committer and trailers; default
+routing, human = warn): Python 133 rule-blocking commits -> 4 still block, Java 53 -> 0. All 4
+were attrs commits co-authored by `pre-commit-ci[bot]`, a formatting bot that was counted as
+an AI agent. With formatting and dependency bots no longer counted, they read as human and
+warn (checked one by one), so **no replayed commit blocks under default routing**. Of the
+2,218 commits, only a handful carry a real AI signal (2 Claude trailers in more-itertools,
+1 in click, 2 Copilot-agent commits in jackson-core, 1 Copilot Autofix in commons-lang), and
+none of those block.
+
+What this does and doesn't show: these are human projects, so every wrong block above becomes
+a warning, which is the point of routing. It says nothing about wrong blocks on AI-authored
+changes, which this history can't measure. And routing trusts commit metadata: an agent
+committing under a human's name with no trailer is read as human (the README says so, and
+recommends `human = "block"` where agents commit that way); only the Claude Code hook's
+session record can't be forged that way.
