@@ -930,3 +930,92 @@ def test_failsafe_includes():
     )
     assert file_rules("pom.xml", no_includes, with_failsafe("**/*IT.java")) != []  # drops IT*
     assert file_rules("pom.xml", with_failsafe("**/*IT.java"), with_failsafe("**/Smoke*IT.java"))
+
+
+@pytest.mark.parametrize(
+    "activation",
+    [
+        "<activation><property><name>env.CI</name></property></activation>",
+        "<activation><property><name>env.GITHUB_ACTIONS</name><value>true</value></property>"
+        "</activation>",
+        "<activation><property><name>java.version</name></property></activation>",
+        "<activation><packaging>jar</packaging></activation>",  # Maven 4
+        "<activation><condition>true</condition></activation>",  # Maven 4
+    ],
+)
+def test_pom_profile_active_on_ci_or_unknown_condition(activation):
+    # CI sets its own environment, and a condition AssertWatch doesn't model may hold: fail
+    # closed. Only a user property someone must pass keeps the profile off.
+    manual = POM.replace("  <build>", PROFILE.format(""), 1)
+    active = POM.replace("  <build>", PROFILE.format(activation), 1)
+    assert len(file_rules("pom.xml", manual, active)) == 1
+
+
+@pytest.mark.parametrize(
+    "activation",
+    [
+        "<activation><property><name>quick</name></property></activation>",
+        "<activation><activeByDefault>false</activeByDefault></activation>",
+    ],
+)
+def test_pom_profile_asked_for_stays_off(activation):
+    manual = POM.replace("  <build>", PROFILE.format(""), 1)
+    asked = POM.replace("  <build>", PROFILE.format(activation), 1)
+    assert file_rules("pom.xml", manual, asked) == []
+
+
+@pytest.mark.parametrize(
+    ("after", "message"),
+    [
+        ("./mvnw -B verify -Dgroups=fast", "`-Dgroups=fast`"),
+        ("./mvnw -B verify -Dsurefire.excludesFile=x.txt", "excludesFile"),
+        ("./mvnw -B verify -Dsurefire.includesFile=x.txt", "includesFile"),
+        ("./mvnw -B verify -Dfailsafe.excludesFile=x.txt", "excludesFile"),
+        ("./mvnw -B -N verify", "`-N`"),
+        ("./mvnw -B --non-recursive verify", "`--non-recursive`"),
+        ("./mvnw -B verify -pl core", "`-pl core`"),
+        ("./mvnw -B verify --projects=core", "`--projects=core`"),
+        ("./mvnw -B verify -rf :web", "`-rf :web`"),
+        ("./gradlew build -m", "`-m`"),
+        ("./gradlew build --dry-run", "`--dry-run`"),
+    ],
+)
+def test_ci_run_builds_part_of_the_project(after, message):
+    found = file_rules(
+        ".github/workflows/ci.yml", WORKFLOW, WORKFLOW.replace("./mvnw -B verify", after)
+    )
+    assert len(found) == 1 and message in found[0], found
+
+
+@pytest.mark.parametrize(
+    "after",
+    [
+        WORKFLOW.replace("./mvnw -B verify", "./mvnw -B verify -m"),  # not a Maven option
+        WORKFLOW.replace("./mvnw -B verify", "./mvnw -B verify && pytest -m 'not slow'"),
+        WORKFLOW + "      - run: ./gradlew build --dry-run\n",  # a plan step beside the run
+    ],
+    ids=["maven-m", "pytest-m", "dry-run-step"],
+)
+def test_ci_options_of_another_tool_or_step_dont_count(after):
+    assert file_rules(".github/workflows/ci.yml", WORKFLOW, after) == []
+
+
+@pytest.mark.parametrize("build", [GROOVY, KOTLIN], ids=["groovy", "kotlin"])
+@pytest.mark.parametrize(
+    ("added", "message"),
+    [
+        ('tasks.test.get().setProperty("ignoreFailures", true)', "ignoreFailures"),
+        ("test.setProperty('enabled', false)", "a test task disabled"),
+        ('test["ignoreFailures"] = true', "ignoreFailures"),
+        ("test['enabled'] = false", "a test task disabled"),
+        ("test.'ignoreFailures' = true", "ignoreFailures"),
+        ('test."enabled" = false', "a test task disabled"),
+    ],
+)
+def test_gradle_property_set_by_name(build, added, message):
+    found = file_rules("build.gradle", build, build + added + "\n")
+    assert len(found) == 1 and message in found[0], found
+
+
+def test_gradle_property_set_by_name_elsewhere_is_unrelated():
+    assert file_rules("build.gradle", GROOVY, GROOVY + "jar.setProperty('enabled', false)\n") == []

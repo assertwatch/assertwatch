@@ -344,6 +344,20 @@ After the fix: Java 54 blocking (both languages otherwise unchanged), so the Jav
 Maven, Gradle or the CI runner, so a reader-versus-tool difference can still let a loosening
 through; an unreadable or oversized file blocks rather than passing.
 
+### AW009 reader-versus-tool differences (2026-10-05)
+
+The third security review of AW009 reported 3 reader-versus-tool findings as a summary only, and
+the details weren't kept. AW009 was reviewed again and each candidate probed against the code.
+Confirmed and fixed: a pom profile switched on by an environment or system property (CI sets
+`env.CI`) or by a condition AssertWatch doesn't model counted as off (`cheat-j70`, `j71`;
+`refactor-j42` keeps a user-property profile off); CI options that run part of the tests,
+`-Dgroups`, Surefire/Failsafe `excludesFile`/`includesFile`, Maven `-N`/`-pl`/`-rf` and Gradle's
+`-m` dry run (`cheat-j72`-`j76`; `refactor-j43`, a dry-run step beside the real build); Gradle
+properties set by name, `setProperty('ignoreFailures', true)`, `test['x']`, `test.'x'`
+(`cheat-j77`-`j79`). Still missed (`cheat-j80`, known): entries added to an excludes file that
+an unchanged pom already reads. **Replay:** no change, Python 133 and Java 54 blocking, every
+commit's findings the same.
+
 ## Routing by author (P3)
 
 **First version, withdrawn.** P3 first read a commit with no AI signal as `human` (warn), and

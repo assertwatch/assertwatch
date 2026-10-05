@@ -205,14 +205,16 @@ of an enclosing class) is credited with the helper's checks, as in Python. Skips
 `assumeTrue`-style calls. Parametrized cases are counted for `@ValueSource`, `@CsvSource`
 (including text blocks) and `@NullSource`/`@EmptySource`. Maven and Gradle config (AW009):
 `pom.xml` and Maven `settings.xml` (Surefire/Failsafe skips, also through a property or a
-profile that turns on by itself, `testFailureIgnore`, excludes and excluded engines, narrowed
+profile that turns on by itself, including on a CI environment variable or any condition
+AssertWatch doesn't model, `testFailureIgnore`, excludes and excluded engines, narrowed
 includes or `groups`, another test source folder, a module dropped while its tests stay,
-JaCoCo limits lowered), every `*.gradle(.kts)` script (`ignoreFailures`, a disabled or
+JaCoCo limits lowered), every `*.gradle(.kts)` script (`ignoreFailures`, also set through
+`setProperty` or a quoted name, a disabled or
 `onlyIf` test task, `exclude`, `excludeTestsMatching`, `excludeTags`, test sources emptied,
 `check` no longer depending on `test`, a subproject dropped from settings, JaCoCo `minimum`
 lowered), `.mvn/maven.config`, and `mvn`/`gradle` runs in GitHub workflows, other CI files
-and shell scripts (`-DskipTests`, `-Dmaven.test.failure.ignore`, `-x test`, a run that no
-longer tests, `if: false`, a test workflow deleted or no longer run on push or pull
+and shell scripts (`-DskipTests`, `-Dmaven.test.failure.ignore`, `-Dgroups`, an excludes file, `-x test`,
+Maven's `-N`/`-pl`/`-rf` and Gradle's `-m` dry run, a run that no longer tests, `if: false`, a test workflow deleted or no longer run on push or pull
 request). Most Java corpus cases are written for the purpose, not modeled on real commits.
 On the last 300 test-touching commits of commons-lang, jsoup and jackson-core (900), 54
 block; an estimated 2.7% of commits are blocked wrongly (28 of the 54 blocks labelled, the
@@ -303,9 +305,9 @@ authorship is provable.
 `make eval` replays the labelled corpus in [`corpus/cases/`](corpus/cases): small, complete
 changes, each one a cheat that should be caught or a refactor that shouldn't be blocked. The
 refactors are modeled on real commits from open-source projects that earlier versions
-blocked. Results today: **119 of 125 cheats caught, 1 of 79 refactors blocked** (95% recall,
-1% false positives on refactors; 2 more refactors get a warning). That includes 71 Java
-cheats and 39 Java refactors; two of the Java cheats are known misses (below). Cases are
+blocked. Results today: **129 of 136 cheats caught, 1 of 81 refactors blocked** (95% recall,
+1% false positives on refactors; 2 more refactors get a warning). That includes 82 Java
+cheats and 41 Java refactors; three of the Java cheats are known misses (below). Cases are
 committed as an AI agent's change unless they say otherwise; three check routing (a listed
 human's weakening warns; the same change by an unlisted author, or with a
 `Co-Authored-By: Claude` trailer, blocks).
@@ -316,8 +318,9 @@ human's weakening warns; the same change by an unlisted author, or with a
   file (or given a body import) that points at a stand-in for the code under test: a test
   that keeps its name is read as moved, and imports aren't compared. In Java builds: a
   module that starts reading a property already set to `true` in a pom the change doesn't
-  touch, and CI starting to build with an existing profile that skips tests (`-Pquick`):
-  AW009 reads only the files in the change.
+  touch, CI starting to build with an existing profile that skips tests (`-Pquick`), and
+  a test added to an excludes file that an unchanged pom already reads (`excludesFile`):
+  AW009 reads only the build and CI files in the change.
 - **Blocked by mistake:** a warning checked through a CLI runner's `result.exception`,
   replaced by `pytest.warns(..., match=...)`. Nothing ties `result.exception` to the warning
   the way a `catch_warnings(record=True)` capture is tied, so the dropped checks can't be
@@ -329,7 +332,7 @@ human's weakening warns; the same change by an unlisted author, or with a
   it.
 
 Read these numbers with care. The corpus is small, and most of it was written by the same
-people as the rules, after the rules: only 8 of the 125 cheats (and 32 of the 79 refactors)
+people as the rules, after the rules: only 8 of the 136 cheats (and 32 of the 81 refactors)
 are modeled on a real commit. Cheats an agent might invent that we haven't thought of
 aren't in it. Cases that fail on purpose are marked `known` in their file, and the test
 suite fails when one starts passing, so the numbers here stay current.

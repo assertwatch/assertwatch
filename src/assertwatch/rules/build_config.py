@@ -77,6 +77,23 @@ _MAVEN_TEST_GOALS = frozenset(
 _GRADLE_TEST_TASK = re.compile(r"(?i)^(\w*test\w*|check|build)$")
 _SEGMENTS = re.compile(r"&&|\|\||[;|]")
 _ENV_ASSIGN = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=")
+# Surefire and Failsafe user properties that select or exclude tests.
+_SELECTING = frozenset(
+    {
+        "groups",
+        "excludedGroups",
+        "surefire.excludedGroups",
+        "surefire.excludesFile",
+        "surefire.includesFile",
+        "failsafe.excludesFile",
+        "failsafe.includesFile",
+    }
+)
+# Options of one tool that build less: Maven's non-recursive build, project list and resume
+# point leave modules out; Gradle's dry run skips every task.
+_MAVEN_PARTIAL = frozenset({"-N", "--non-recursive"})
+_MAVEN_PARTIAL_ARG = frozenset({"-pl", "--projects", "-rf", "--resume-from"})
+_GRADLE_PARTIAL = frozenset({"-m", "--dry-run"})
 # Environment variables whose options every Maven or Gradle run (or JVM) picks up.
 _OPTION_VARS = re.compile(
     r"^\s*(?:-\s*)?(?:export\s+)?"
@@ -104,7 +121,7 @@ def flags(tokens: list[str]) -> Counter[str]:
                 found[token] += 1
             elif name in ("test", "it.test") and value:  # runs only these, or `!` excludes
                 found[token] += 1
-            elif name in ("excludedGroups", "surefire.excludedGroups") and value:
+            elif name in _SELECTING and value:  # runs only some tests, or reads a list to skip
                 found[token] += 1
             elif "$" in name or (name in _PROPERTIES and "$" in value):
                 found[token] += 1  # set from a variable: may well skip tests
@@ -119,6 +136,20 @@ def flags(tokens: list[str]) -> Counter[str]:
         elif token.startswith("-x") and len(token) > 2:  # Gradle reads `-xtest` as `-x test`
             if _GRADLE_TEST_TASK.match(token[2:].rsplit(":", 1)[-1]):
                 found[token] += 1
+    return found
+
+
+def _partial(tool: str, args: list[str]) -> Counter[str]:
+    """Options that make this Maven or Gradle run build only part of the project."""
+    found: Counter[str] = Counter()
+    for i, arg in enumerate(args):
+        option = arg.partition("=")[0]
+        if tool in _MAVEN and arg in _MAVEN_PARTIAL:
+            found[arg] += 1
+        elif tool in _MAVEN and option in _MAVEN_PARTIAL_ARG:
+            found[arg if "=" in arg or i + 1 >= len(args) else f"{arg} {args[i + 1]}"] += 1
+        elif tool in _GRADLE and arg in _GRADLE_PARTIAL:
+            found[arg] += 1
     return found
 
 
@@ -156,6 +187,7 @@ def _commands(lines: list[str]) -> _Commands:
             for arg in tokens[tool + 1 :]:
                 if arg.startswith("$") or "`" in arg or "$(" in arg:
                     found[f"{arg} (arguments from a variable)"] += 1
+            found += _partial(tokens[tool].rsplit("/", 1)[-1], tokens[tool + 1 :])
             result.inside += found
             result.runs += 1
             if _runs_tests(tokens[tool].rsplit("/", 1)[-1], tokens[tool + 1 :]) and not found:
@@ -249,18 +281,30 @@ def _ratio(text: str) -> float | None:
         return None
 
 
+# Properties every build machine (or CI runner) has: activating on one isn't asking for it.
+_AMBIENT_PROPERTY = re.compile(r"^(env|java|os|user|file|line|path)\.")
+
+
 def _active(profile: ET.Element) -> bool:
-    """A profile Maven turns on without being asked: activeByDefault, or a JDK, OS, file or
-    missing-property condition that holds on an ordinary build machine."""
+    """A profile Maven may turn on without being asked: activeByDefault, a missing property,
+    an environment variable (CI sets its own) or system property, and any other condition
+    (jdk, os, file, Maven 4's packaging or condition): assumed to hold, so fail closed. Only a
+    user property someone must pass (`-Dquick`) keeps a profile off."""
     activation = _child(profile, "activation")
     if activation is None:
         return False
-    if _text(_child(activation, "activeByDefault")).lower() == "true":
-        return True
-    if any(_child(activation, c) is not None for c in ("jdk", "os", "file")):
-        return True
-    prop = _child(activation, "property")
-    return prop is not None and _text(_child(prop, "name")).startswith("!")
+    for condition in activation:
+        kind = _local(condition.tag)
+        if kind == "activeByDefault":
+            if _text(condition).lower() == "true":
+                return True
+        elif kind == "property":
+            name = _text(_child(condition, "name"))
+            if name.startswith("!") or _AMBIENT_PROPERTY.match(name):
+                return True
+        elif kind:
+            return True
+    return False
 
 
 def _effective(element: ET.Element, settings: bool) -> Iterator[ET.Element]:
@@ -473,6 +517,10 @@ _TEST_HEADER = re.compile(r"(?i)test")
 # `x = v`, `x v` (Groovy), after any receiver: `tasks.getByName("test").enabled = false`.
 _SETTER = re.compile(r"\bset([A-Z]\w{0,100})\s*\(")  # setEnabled(false)
 _PROPERTY_SET = re.compile(r"\b(\w{1,100})\s*\.\s*set\s*\(")  # enabled.set(false)
+# setProperty('enabled', false): Groovy's dynamic setter, by name
+_SET_PROPERTY = re.compile(r"\bsetProperty\s*\(\s*(['\"])(\w{1,100})\1\s*,(.*)\)\s*$", re.S)
+# test['enabled'] and test.'enabled': a property named by a string, read as test.enabled
+_NAMED_BY_STRING = re.compile(r"(?:\[\s*(['\"])(\w{1,100})\1\s*\]|\.\s*(['\"])(\w{1,100})\3)\s*$")
 _NOT_ASSIGN = "=!<>+-*/?:~%&|^"  # `==`, `!=`, `+=`, `?=`, ... are not plain assignments
 _EXCLUDE_LISTS = (
     "excludeTestsMatching",
@@ -582,7 +630,11 @@ def _continues(current: list[str]) -> bool:
 
 def _assignment(statement: str) -> tuple[str, str, str] | None:
     """(receiver, property, value) of an assignment in any of its spellings, or None:
-    `x = v`, Groovy's `x v`, `setX(v)`, `x.set(v)`, after any receiver."""
+    `x = v`, Groovy's `x v`, `setX(v)`, `x.set(v)`, `setProperty('x', v)`, `t['x'] = v` and
+    `t.'x' = v`, after any receiver."""
+    by_name = _SET_PROPERTY.search(statement)
+    if by_name:
+        return _named(statement[: by_name.start()], by_name[2], by_name[3])
     setter = _SETTER.search(statement) or _PROPERTY_SET.search(statement)
     if setter and statement.rstrip().endswith(")"):
         name = setter[1]
@@ -598,6 +650,9 @@ def _assignment(statement: str) -> tuple[str, str, str] | None:
     else:
         left, value = statement[:equals], statement[equals + 1 :]
     left = left.rstrip()
+    quoted = _NAMED_BY_STRING.search(left)
+    if quoted:
+        left = f"{left[: quoted.start()]}.{quoted[2] or quoted[4]}"
     start = len(left)
     while start and (left[start - 1].isalnum() or left[start - 1] == "_"):
         start -= 1
