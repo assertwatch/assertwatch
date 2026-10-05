@@ -10,10 +10,14 @@ change can't relax the rules it is checked against. With no config file, the def
     rule = "AW001"
     path = "tests/legacy/**"
     reason = "legacy suite is being retired"
+    [routing]               # what a blocking finding becomes, by who made the change
+    human = "warn"          # default; ai, mixed and unknown default to "block"
+    ai_patterns = ["my-agent@example[.]com"]  # extra regexes marking a commit as AI-made
 """
 
 from __future__ import annotations
 
+import re
 import tomllib
 from dataclasses import dataclass, field
 from fnmatch import fnmatchcase
@@ -21,6 +25,11 @@ from fnmatch import fnmatchcase
 from assertwatch.paths import CONFIG_PATH
 
 SEVERITIES = frozenset({"block", "warn", "info", "off"})
+AUTHORS = ("ai", "mixed", "unknown", "human")
+ROUTES = frozenset({"block", "warn"})
+DEFAULT_ROUTING = {"ai": "block", "mixed": "block", "unknown": "block", "human": "warn"}
+# Routing when [routing] or the whole file can't be read: nothing is lowered (fail closed).
+STRICT_ROUTING = dict.fromkeys(AUTHORS, "block")
 
 
 @dataclass(frozen=True)
@@ -40,6 +49,9 @@ class Config:
     test_paths: tuple[str, ...] = ()  # empty: any file named like a test
     severity: dict[str, str] = field(default_factory=dict)
     allow: tuple[Allow, ...] = ()
+    # author class -> "block" (keep the rule's severity) or "warn" (a block becomes a warning)
+    routing: dict[str, str] = field(default_factory=lambda: dict(DEFAULT_ROUTING))
+    ai_patterns: tuple[str, ...] = ()  # regexes added to attribution's defaults
     errors: list[str] = field(default_factory=list)
 
 
@@ -55,7 +67,10 @@ def parse_config(text: str | None) -> Config:
     try:
         data = tomllib.loads(text)
     except tomllib.TOMLDecodeError as exc:
-        return Config(errors=[f"{CONFIG_PATH}: {exc}; using defaults"])
+        # The defaults, except that nothing is lowered: the file may say human = "block".
+        return Config(
+            errors=[f"{CONFIG_PATH}: {exc}; using defaults"], routing=dict(STRICT_ROUTING)
+        )
     config = Config()
 
     paths = data.get("test_paths", [])
@@ -85,7 +100,51 @@ def parse_config(text: str | None) -> Config:
         else:
             config.errors.append(f"{CONFIG_PATH}: ignoring [[allow]] {entry}: {allow}")
     config.allow = tuple(allows)
+    _routing(data, config)
     return config
+
+
+def _routing(data: dict, config: Config) -> None:
+    """Read [routing]. Anything invalid in it means "block" for every author: a typo must
+    never lower a finding the config meant to keep blocking."""
+    routing = data.get("routing", {})
+    if not isinstance(routing, dict):
+        config.errors.append(f"{CONFIG_PATH}: [routing] must be a table; blocking for all")
+        config.routing = dict(STRICT_ROUTING)
+        return
+    invalid = False
+    for key, value in routing.items():
+        if key == "ai_patterns":
+            continue
+        if key not in AUTHORS:
+            invalid = True
+            config.errors.append(
+                f"{CONFIG_PATH}: [routing] {key} is not one of {', '.join(AUTHORS)}; "
+                "blocking for all"
+            )
+        elif value in ROUTES:
+            config.routing[key] = value
+        else:
+            invalid = True
+            config.errors.append(
+                f"{CONFIG_PATH}: [routing] {key} = {value!r} is not one of block, warn; "
+                "blocking for all"
+            )
+    if invalid:
+        config.routing = dict(STRICT_ROUTING)
+    patterns = routing.get("ai_patterns", [])
+    if not isinstance(patterns, list) or not all(isinstance(p, str) for p in patterns):
+        config.errors.append(f"{CONFIG_PATH}: [routing] ai_patterns must be a list of strings")
+        return
+    valid = []
+    for pattern in patterns:
+        try:
+            re.compile(pattern)
+        except re.error as exc:
+            config.errors.append(f"{CONFIG_PATH}: [routing] ai_patterns {pattern!r}: {exc}")
+        else:
+            valid.append(pattern)
+    config.ai_patterns = tuple(valid)
 
 
 def allow_entries(data: dict) -> list[dict]:

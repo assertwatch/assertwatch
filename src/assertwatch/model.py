@@ -143,3 +143,8 @@ class Finding:
     hint: str | None = None
     waiver: str | None = None  # reason of the standing waiver that covers it, if any
     side: str = "head"  # which side of the diff `line` is on: "head", or "base" for removals
+    # who made the change to path: "ai", "mixed", "human" or "unknown" (see attribution.py),
+    # and the evidence that decided it; None when attribution didn't run
+    author: str | None = None
+    author_source: str | None = None
+    routed_from: Severity | None = None  # the rule's severity, when routing lowered it

@@ -10,6 +10,9 @@ Checked files, on both sides of the diff:
   --deselect, -k, -m "not ...", --lf or --ignore; testpaths losing entries; coverage
   fail_under (also .coveragerc and --cov-fail-under) lowered or removed.
 - conftest.py: collect_ignore entries or skip/xfail markers added.
+- Maven and Gradle (pom.xml, build.gradle(.kts), .mvn/maven.config and jvm.config, and
+  `mvn`/`gradle` runs in CI workflows): tests skipped, excluded, narrowed or their failures
+  ignored; JaCoCo limits lowered. See build_config.py.
 """
 
 from __future__ import annotations
@@ -23,12 +26,22 @@ import shlex
 import tomllib
 from collections.abc import Iterator
 from dataclasses import dataclass, field
+from functools import partial
 from pathlib import PurePosixPath
 
 from assertwatch.extract.python import dotted
 from assertwatch.model import Finding, Severity
-from assertwatch.paths import CONFIG_PATH, PYTEST_FILES, SETTINGS, is_workflow_path
-from assertwatch.rules import Context, FileChange, Rule
+from assertwatch.paths import (
+    CONFIG_PATH,
+    MAVEN_FILES,
+    PYTEST_FILES,
+    SETTINGS,
+    is_ci_script,
+    is_gradle_path,
+    is_maven_config,
+    is_workflow_path,
+)
+from assertwatch.rules import Context, FileChange, Rule, build_config
 
 ID = "AW009"
 
@@ -43,9 +56,18 @@ _NARROWING = {
     "--ignore": True,
     "--ignore-glob": True,
 }
-_TEST_COMMAND = re.compile(r"\b(pytest|py\.test|tox|nox|unittest|assertwatch|test)\b", re.I)
+_TEST_COMMAND = re.compile(
+    r"\b(pytest|py\.test|tox|nox|unittest|assertwatch|test|mvnw?|gradlew?)\b", re.I
+)
 _SWALLOW = re.compile(r"\|\|\s*(true|:|exit\s+0)\b")
 _CONTINUE = re.compile(r"^\s*continue-on-error\s*:\s*(true|\$\{\{)", re.I | re.M)
+_NEVER = re.compile(r"""^\s*if\s*:\s*(\$\{\{\s*)?(false|0|''|""|null)(\s*\}\})?\s*$""", re.I)
+# Events that run a workflow on code changes; losing all of them stops its tests on PRs.
+_CODE_EVENTS = frozenset({"push", "pull_request", "pull_request_target", "merge_group"})
+_MAX_CANDIDATES = 200
+_ANCHOR = re.compile(r"&([A-Za-z0-9_-]+)")
+_ALIAS = re.compile(r"(?<![\w*])\*([A-Za-z0-9_-]+)")
+_SCRIPT = re.compile(r"(\.sh|\.bash|Makefile|justfile)$")
 
 
 def check(context: Context) -> Iterator[Finding]:
@@ -62,6 +84,77 @@ def check(context: Context) -> Iterator[Finding]:
             yield from _pytest_config(change)
         elif name == "conftest.py":
             yield from _conftest(change, context)
+        elif name in MAVEN_FILES:
+            gone = partial(_folder_gone, change, context, ("pom.xml",))
+            settings = name == "settings.xml"
+            yield from _build(
+                change, build_config.maven(change.before, change.after, gone, settings=settings)
+            )
+        elif is_gradle_path(path):
+            before = change.before if change.before is not None else _converted(change, context)
+            gone = partial(_folder_gone, change, context, ("build.gradle", "build.gradle.kts"))
+            yield from _build(change, build_config.gradle(before, change.after, name, gone))
+        elif is_maven_config(path):
+            yield from _build(change, build_config.config_flags(change.before, change.after))
+        elif is_ci_script(path):
+            lines = (_code_lines(change.before or ""), _code_lines(change.after or ""))
+            yield from _build(change, build_config.workflow(*lines))
+    yield from _ci_deleted(context)
+
+
+def _folder_gone(change: FileChange, context: Context, builds: tuple[str, ...], sub: str) -> bool:
+    """A module or subproject dropped from the build is gone, not hidden: the change deletes or
+    moves its build file, and no test file is left in its folder to stop running."""
+    folder = posixpath.normpath(posixpath.join(posixpath.dirname(change.path), sub))
+    files = {posixpath.join(folder, b) for b in builds}
+    moved = any(
+        other.base_path in files and other.head_path != other.base_path for other in context.files
+    )
+    if not moved:
+        return False
+    # Without a way to look (no repository), assume tests are left: fail closed.
+    return context.tests_under is not None and not context.tests_under(folder)
+
+
+def _converted(change: FileChange, context: Context) -> str | None:
+    """A new build.gradle.kts replacing the build.gradle it was converted from (or the other
+    way): seen as two files when the conversion rewrites most lines, but it is one script."""
+    stem = change.path.removesuffix(".kts")
+    return next(
+        (
+            other.before
+            for other in context.files
+            if other.after is None
+            and other.base_path
+            and other.base_path.removesuffix(".kts") == stem
+        ),
+        None,
+    )
+
+
+def _ci_deleted(context: Context) -> Iterator[Finding]:
+    """A CI file that ran tests deleted, with no CI file in the change running tests instead."""
+    ci = [
+        c
+        for c in context.files
+        if is_workflow_path(c.path) or (is_ci_script(c.path) and not _SCRIPT.search(c.path))
+    ]
+    replaced = any(c.after is not None and _runs_tests(c.after) for c in ci)
+    for change in ci:
+        if change.after is None and change.before and _runs_tests(change.before) and not replaced:
+            yield _finding(change, "A CI file that ran tests was deleted")
+
+
+def _runs_tests(text: str) -> bool:
+    return any(_TEST_COMMAND.search(line) for line in _code_lines(text))
+
+
+def _build(change: FileChange, found: Iterator[build_config.Loosening]) -> Iterator[Finding]:
+    try:
+        for what, needle in found:
+            yield _finding(change, what, needle)
+    except Exception:  # noqa: BLE001 - whatever went wrong, the file is unchecked: block
+        yield _finding(change, "The file could not be checked for loosened test settings")
 
 
 def _finding(change: FileChange, what: str, needle: str = "") -> Finding:
@@ -142,6 +235,9 @@ def _hooks_disabled(data: object) -> bool:
 
 def _workflow(change: FileChange) -> Iterator[Finding]:
     before, after = change.before or "", change.after or ""
+    if len(after) > build_config.MAX_CHARS:
+        yield _finding(change, "The workflow is too large to check for loosened test settings")
+        return
     if _guard_lines(after) < _guard_lines(before):
         yield _finding(change, "The AssertWatch step was removed from the CI workflow")
     if _test_continues(after) > _test_continues(before):
@@ -152,17 +248,75 @@ def _workflow(change: FileChange) -> Iterator[Finding]:
         )
     if _swallowed(after) > _swallowed(before):
         yield _finding(change, "A test command in CI now ignores failures (`|| true`)", "||")
+    if _never_runs(after) > _never_runs(before):
+        what = "A CI step or job that runs tests was turned off (`if: false`)"
+        yield _finding(change, what, "if:")
+    if change.after is not None and _runs_tests(after):
+        old, new = _triggers(before), _triggers(after)
+        if old & _CODE_EVENTS and not new & _CODE_EVENTS:
+            lost = ", ".join(sorted(old & _CODE_EVENTS))
+            yield _finding(
+                change, f"The CI workflow that runs tests no longer runs on {lost}", "on:"
+            )
+    yield from _build(change, build_config.workflow(_code_lines(before), _code_lines(after)))
+
+
+def _never_runs(text: str) -> int:
+    """`if:` conditions that are always false, on a step or job that runs tests."""
+    return _settings_on_test_steps(text, _NEVER)
+
+
+def _triggers(text: str) -> set[str]:
+    """Event names under the workflow's top-level `on:` (any of its YAML spellings)."""
+    lines = _code_lines(text)
+    for k, line in enumerate(lines):
+        key = re.match(r"""^["']?(on|true)["']?\s*:(.*)$""", line)
+        if not key:
+            continue
+        block = [key[2]]
+        for rest in lines[k + 1 :]:
+            if rest.strip() and not rest[0].isspace():
+                break
+            block.append(rest)
+        text = "\n".join(block)
+        for alias in _ALIAS.findall(text):  # `on: *triggers`: the anchor's value counts
+            text += "\n" + "\n".join(_anchored(lines, alias))
+        return set(re.findall(r"[a-z_]+", text))
+    return set()
+
+
+def _settings_on_test_steps(text: str, setting: re.Pattern[str]) -> int:
+    """How many lines set this on a step or job that runs tests. Past a sane number of such
+    lines, all of them count, without looking at their steps (bounded work, fail closed)."""
+    lines = text.splitlines()
+    candidates = [k for k, line in enumerate(lines) if setting.match(line.lstrip(" -"))]
+    if len(candidates) > _MAX_CANDIDATES:
+        return len(candidates)
+    return sum(1 for k in candidates if _TEST_COMMAND.search(_scope(lines, k)))
+
+
+def _scope(lines: list[str], k: int) -> str:
+    """Line k's step or job, plus what YAML anchors and aliases join to it: a step that
+    merges in an anchored mapping (`<<: *defaults`), and the steps that reuse an anchor
+    defined here."""
+    block = _block(lines, k)
+    parts = [block]
+    for alias in _ALIAS.findall(block):
+        parts += _anchored(lines, alias)
+    for anchor in _ANCHOR.findall(block):
+        parts += [_block(lines, j) for j, line in enumerate(lines) if f"*{anchor}" in line]
+    return "\n".join(parts)
+
+
+def _anchored(lines: list[str], name: str) -> list[str]:
+    """The line defining anchor &name and the block under it."""
+    return [line + "\n" + _block(lines, j) for j, line in enumerate(lines) if f"&{name}" in line]
 
 
 def _test_continues(text: str) -> int:
     """`continue-on-error` settings on a step or job that runs tests. One on a step that only
     downloads or uploads something can't hide a failing test."""
-    lines = text.splitlines()
-    found = 0
-    for k, line in enumerate(lines):
-        if _CONTINUE.match(line.lstrip(" -")) and _TEST_COMMAND.search(_block(lines, k)):
-            found += 1
-    return found
+    return _settings_on_test_steps(text, _CONTINUE)
 
 
 def _block(lines: list[str], k: int) -> str:

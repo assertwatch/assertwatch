@@ -35,6 +35,8 @@ class Context:
     messages: list[str] = field(default_factory=list)  # commit messages in base..head
     new_test_files: frozenset[str] = frozenset()  # test files that didn't exist at base
     python2_dropped: bool = False  # the base ref declares no Python 2 support
+    # Does a test file remain under this folder at head? None: not known (no repository).
+    tests_under: Callable[[str], bool] | None = None
 
 
 @dataclass(frozen=True)
@@ -90,6 +92,7 @@ def run_rules(
     config: Config | None = None,
     python2_dropped: bool = False,
     find_copies: Callable[[list[str]], Iterable[TestFile]] | None = None,
+    tests_under: Callable[[str], bool] | None = None,
 ) -> list[Finding]:
     """Match tests across base and head, run every rule, and return sorted findings.
 
@@ -113,6 +116,7 @@ def run_rules(
         list(messages),
         frozenset(f.path for f in head_files if f.path not in old_paths),
         python2_dropped,
+        tests_under,
     )
     selected = list(rules) if rules is not None else all_rules()
     findings = [f for rule in selected for f in rule.check(context)]

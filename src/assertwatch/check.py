@@ -5,6 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from assertwatch.attribution import attributor, route_findings
 from assertwatch.config import CONFIG_PATH, Config, parse_config, path_matches
 from assertwatch.extract import java, python
 from assertwatch.gitdiff import (
@@ -13,6 +14,8 @@ from assertwatch.gitdiff import (
     commit_messages,
     diff_lines,
     files_defining,
+    files_under,
+    read_bytes,
     read_text,
 )
 from assertwatch.model import Finding, TestFile
@@ -32,12 +35,24 @@ class CheckResult:
     unreadable: list[str] = field(default_factory=list)  # test files that didn't parse
 
 
-def check_diff(repo: Path, base: str, head: str | None = None) -> CheckResult:
+def check_diff(
+    repo: Path,
+    base: str,
+    head: str | None = None,
+    *,
+    hook: bool = False,
+    session: str | None = None,
+    route: bool = True,
+) -> CheckResult:
     """Check the change from base to head (None = the working tree).
 
     The config and the declared Python versions come from base, never from the change itself.
     A test file that doesn't parse on either side is skipped and listed in errors: its tests
     are unknown, so they must not be reported as removed.
+
+    Every finding gets its author (attribution.py). hook marks a run from the Claude Code
+    hook, and session is the commit its session started from. With route, findings are
+    routed by author as the config says; without, they keep the rules' severities.
     """
     config = parse_config(read_text(repo, base, CONFIG_PATH))
     errors = list(config.errors)
@@ -54,8 +69,8 @@ def check_diff(repo: Path, base: str, head: str | None = None) -> CheckResult:
                 FileChange(
                     old_path,
                     new_path,
-                    read_text(repo, base, old_path) if old_path else None,
-                    read_text(repo, head, new_path) if new_path else None,
+                    _read_guard(repo, base, old_path),
+                    _read_guard(repo, head, new_path),
                 )
             )
         old = _load(repo, base, old_path, config)
@@ -81,10 +96,20 @@ def check_diff(repo: Path, base: str, head: str | None = None) -> CheckResult:
         config=config,
         python2_dropped=python2_dropped(lambda path: read_text(repo, base, path)),
         find_copies=lambda names: _unchanged_copies(repo, head, names, changes, config),
+        tests_under=lambda folder: any(map(is_test_path, files_under(repo, head, folder))),
     )
+    who = attributor(repo, base, head, config, hook=hook, session=session)
+    findings = route_findings(findings, who, config if route else Config(routing={}))
     # A renamed file counts once, under its head path.
     paths = {f.path for f in head_files} | {f.path for f in base_files if f.path not in path_map}
     return CheckResult(findings, errors, len(paths), unreadable)
+
+
+def _read_guard(repo: Path, ref: str | None, path: str | None) -> str | None:
+    """A guard or build file as text, even when it holds NUL bytes or invalid UTF-8: reading
+    it as missing would let a change to it pass unchecked. A leading BOM is dropped."""
+    data = read_bytes(repo, ref, path) if path else None
+    return None if data is None else data.decode("utf-8", "replace").removeprefix("\ufeff")
 
 
 def _unchanged_copies(

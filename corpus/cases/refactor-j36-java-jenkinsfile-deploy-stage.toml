@@ -1,0 +1,311 @@
+label = 'refactor'
+title = "A Jenkins deploy stage that skips tests after the Test stage"
+
+[before]
+"src/main/java/shop/Cart.java" = '''package shop;
+
+import java.util.ArrayList;
+import java.util.List;
+
+public class Cart {
+    private final List<double[]> items = new ArrayList<>();
+
+    public void add(String name, int qty, double price) {
+        if (qty <= 0) throw new IllegalArgumentException("qty must be positive");
+        items.add(new double[] {qty, price});
+    }
+
+    public int count() {
+        return items.stream().mapToInt(i -> (int) i[0]).sum();
+    }
+
+    public double total() {
+        return items.stream().mapToDouble(i -> i[0] * i[1]).sum();
+    }
+
+    public double checkout() {
+        if (items.isEmpty()) throw new IllegalStateException("cart is empty");
+        return total();
+    }
+
+    public static double withTax(double amount, double rate) {
+        return Math.round(amount * (1 + rate) * 100) / 100.0;
+    }
+}
+'''
+"src/test/java/shop/CartTest.java" = '''package shop;
+
+import static org.assertj.core.api.Assertions.assertThat;
+import static org.junit.jupiter.api.Assertions.*;
+
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.CsvSource;
+
+class CartTest {
+    @Test
+    void totalSumsItems() {
+        Cart cart = new Cart();
+        cart.add("apple", 3, 0.5);
+        cart.add("pear", 2, 1.25);
+        assertEquals(4.0, cart.total(), 1e-9);
+        assertEquals(5, cart.count());
+    }
+
+    @ParameterizedTest
+    @CsvSource({"10.05, 0.2, 12.06", "10.0, 0.0, 10.0"})
+    void taxRoundsToCents(double amount, double rate, double expected) {
+        assertEquals(expected, Cart.withTax(amount, rate));
+    }
+
+    @Test
+    void emptyCartRaisesOnCheckout() {
+        IllegalStateException e = assertThrows(IllegalStateException.class, () -> new Cart().checkout());
+        assertThat(e).hasMessageContaining("empty");
+    }
+
+    @Test
+    void negativeQuantityIsRejected() {
+        assertThrows(IllegalArgumentException.class, () -> new Cart().add("apple", -1, 0.5));
+    }
+}
+'''
+"pom.xml" = '''<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0">
+  <modelVersion>4.0.0</modelVersion>
+  <groupId>shop</groupId>
+  <artifactId>shop</artifactId>
+  <version>1.0.0-SNAPSHOT</version>
+
+  <properties>
+    <maven.compiler.release>21</maven.compiler.release>
+    <junit.version>5.10.2</junit.version>
+  </properties>
+
+  <dependencies>
+    <dependency>
+      <groupId>org.junit.jupiter</groupId>
+      <artifactId>junit-jupiter</artifactId>
+      <version>${junit.version}</version>
+      <scope>test</scope>
+    </dependency>
+    <dependency>
+      <groupId>org.assertj</groupId>
+      <artifactId>assertj-core</artifactId>
+      <version>3.25.3</version>
+      <scope>test</scope>
+    </dependency>
+  </dependencies>
+
+  <build>
+    <plugins>
+      <plugin>
+        <groupId>org.apache.maven.plugins</groupId>
+        <artifactId>maven-surefire-plugin</artifactId>
+        <version>3.2.5</version>
+        <configuration>
+          <includes>
+            <include>**/*Test.java</include>
+          </includes>
+        </configuration>
+      </plugin>
+      <plugin>
+        <groupId>org.jacoco</groupId>
+        <artifactId>jacoco-maven-plugin</artifactId>
+        <version>0.8.12</version>
+        <executions>
+          <execution>
+            <goals><goal>prepare-agent</goal></goals>
+          </execution>
+          <execution>
+            <id>check</id>
+            <goals><goal>check</goal></goals>
+            <configuration>
+              <rules>
+                <rule>
+                  <element>BUNDLE</element>
+                  <limits>
+                    <limit>
+                      <counter>LINE</counter>
+                      <value>COVEREDRATIO</value>
+                      <minimum>0.80</minimum>
+                    </limit>
+                  </limits>
+                </rule>
+              </rules>
+            </configuration>
+          </execution>
+        </executions>
+      </plugin>
+    </plugins>
+  </build>
+</project>
+'''
+"Jenkinsfile" = '''pipeline {
+    agent any
+    stages {
+        stage('Test') {
+            steps {
+                sh './mvnw -B verify'
+            }
+        }
+    }
+}
+'''
+
+[after]
+"src/main/java/shop/Cart.java" = '''package shop;
+
+import java.util.ArrayList;
+import java.util.List;
+
+public class Cart {
+    private final List<double[]> items = new ArrayList<>();
+
+    public void add(String name, int qty, double price) {
+        if (qty <= 0) throw new IllegalArgumentException("qty must be positive");
+        items.add(new double[] {qty, price});
+    }
+
+    public int count() {
+        return items.stream().mapToInt(i -> (int) i[0]).sum();
+    }
+
+    public double total() {
+        return items.stream().mapToDouble(i -> i[0] * i[1]).sum();
+    }
+
+    public double checkout() {
+        if (items.isEmpty()) throw new IllegalStateException("cart is empty");
+        return total();
+    }
+
+    public static double withTax(double amount, double rate) {
+        return Math.round(amount * (1 + rate) * 100) / 100.0;
+    }
+}
+'''
+"src/test/java/shop/CartTest.java" = '''package shop;
+
+import static org.assertj.core.api.Assertions.assertThat;
+import static org.junit.jupiter.api.Assertions.*;
+
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.CsvSource;
+
+class CartTest {
+    @Test
+    void totalSumsItems() {
+        Cart cart = new Cart();
+        cart.add("apple", 3, 0.5);
+        cart.add("pear", 2, 1.25);
+        assertEquals(4.0, cart.total(), 1e-9);
+        assertEquals(5, cart.count());
+    }
+
+    @ParameterizedTest
+    @CsvSource({"10.05, 0.2, 12.06", "10.0, 0.0, 10.0"})
+    void taxRoundsToCents(double amount, double rate, double expected) {
+        assertEquals(expected, Cart.withTax(amount, rate));
+    }
+
+    @Test
+    void emptyCartRaisesOnCheckout() {
+        IllegalStateException e = assertThrows(IllegalStateException.class, () -> new Cart().checkout());
+        assertThat(e).hasMessageContaining("empty");
+    }
+
+    @Test
+    void negativeQuantityIsRejected() {
+        assertThrows(IllegalArgumentException.class, () -> new Cart().add("apple", -1, 0.5));
+    }
+}
+'''
+"pom.xml" = '''<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0">
+  <modelVersion>4.0.0</modelVersion>
+  <groupId>shop</groupId>
+  <artifactId>shop</artifactId>
+  <version>1.0.0-SNAPSHOT</version>
+
+  <properties>
+    <maven.compiler.release>21</maven.compiler.release>
+    <junit.version>5.10.2</junit.version>
+  </properties>
+
+  <dependencies>
+    <dependency>
+      <groupId>org.junit.jupiter</groupId>
+      <artifactId>junit-jupiter</artifactId>
+      <version>${junit.version}</version>
+      <scope>test</scope>
+    </dependency>
+    <dependency>
+      <groupId>org.assertj</groupId>
+      <artifactId>assertj-core</artifactId>
+      <version>3.25.3</version>
+      <scope>test</scope>
+    </dependency>
+  </dependencies>
+
+  <build>
+    <plugins>
+      <plugin>
+        <groupId>org.apache.maven.plugins</groupId>
+        <artifactId>maven-surefire-plugin</artifactId>
+        <version>3.2.5</version>
+        <configuration>
+          <includes>
+            <include>**/*Test.java</include>
+          </includes>
+        </configuration>
+      </plugin>
+      <plugin>
+        <groupId>org.jacoco</groupId>
+        <artifactId>jacoco-maven-plugin</artifactId>
+        <version>0.8.12</version>
+        <executions>
+          <execution>
+            <goals><goal>prepare-agent</goal></goals>
+          </execution>
+          <execution>
+            <id>check</id>
+            <goals><goal>check</goal></goals>
+            <configuration>
+              <rules>
+                <rule>
+                  <element>BUNDLE</element>
+                  <limits>
+                    <limit>
+                      <counter>LINE</counter>
+                      <value>COVEREDRATIO</value>
+                      <minimum>0.80</minimum>
+                    </limit>
+                  </limits>
+                </rule>
+              </rules>
+            </configuration>
+          </execution>
+        </executions>
+      </plugin>
+    </plugins>
+  </build>
+</project>
+'''
+"Jenkinsfile" = '''pipeline {
+    agent any
+    stages {
+        stage('Test') {
+            steps {
+                sh './mvnw -B verify'
+            }
+        }
+        stage('Deploy') {
+            steps {
+                sh './mvnw -B deploy -DskipTests'
+            }
+        }
+    }
+}
+'''

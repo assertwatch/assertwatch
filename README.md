@@ -191,7 +191,7 @@ as removed.
 | AW006 | The code under test mocked: a test now patches or stubs a function it calls itself and used to call for real (`mocker.patch("shop.total", return_value=4.0)` then `total()`; Java `when(cart.total()).thenReturn(4.0)`), so it checks the mock |
 | AW007 | A check wrapped so its failure is ignored: `try`/`except AssertionError` (or `Exception`, a bare `except`, `contextlib.suppress`) that neither re-raises nor fails; Java `catch (AssertionError \| Throwable \| Error ...)` |
 | AW008 | A test body emptied |
-| AW009 | Test config or the guard loosened (`--deselect`, lower `fail_under`, hook removed, ...) |
+| AW009 | Test config or the guard loosened (`--deselect`, lower `fail_under`, `-DskipTests`, Surefire/Gradle excludes, lower JaCoCo minimum, hook removed, ...) |
 | AW011 | An assertion that can never fail (`assert True`, `x == x`) |
 
 **Java (in progress).** Test files named like Maven Surefire's and Failsafe's defaults
@@ -203,8 +203,17 @@ AW001-AW008 and AW011, like Python. A test that calls a helper method of its cla
 of an enclosing class) is credited with the helper's checks, as in Python. Skips:
 `@Disabled`, `@Ignore`, `@DisabledIf*`/`@EnabledIf*` and the other conditions, and
 `assumeTrue`-style calls. Parametrized cases are counted for `@ValueSource`, `@CsvSource`
-(including text blocks) and `@NullSource`/`@EmptySource`. Not yet: Maven and Gradle config
-(AW009); most Java corpus cases are written for the purpose, not modeled on real commits.
+(including text blocks) and `@NullSource`/`@EmptySource`. Maven and Gradle config (AW009):
+`pom.xml` and Maven `settings.xml` (Surefire/Failsafe skips, also through a property or a
+profile that turns on by itself, `testFailureIgnore`, excludes and excluded engines, narrowed
+includes or `groups`, another test source folder, a module dropped while its tests stay,
+JaCoCo limits lowered), every `*.gradle(.kts)` script (`ignoreFailures`, a disabled or
+`onlyIf` test task, `exclude`, `excludeTestsMatching`, `excludeTags`, test sources emptied,
+`check` no longer depending on `test`, a subproject dropped from settings, JaCoCo `minimum`
+lowered), `.mvn/maven.config`, and `mvn`/`gradle` runs in GitHub workflows, other CI files
+and shell scripts (`-DskipTests`, `-Dmaven.test.failure.ignore`, `-x test`, a run that no
+longer tests, `if: false`, a test workflow deleted or no longer run on push or pull
+request). Most Java corpus cases are written for the purpose, not modeled on real commits.
 On the last 300 test-touching commits of commons-lang, jsoup and jackson-core (900), 53
 block; labelling a sample puts about 2.8% of commits blocked wrongly (Python: about 2.6%),
 mostly tests moved between files and rewritten
@@ -233,20 +242,69 @@ Waivers added in the change itself (a new `[[allow]]`, an inline
 `# assertwatch: allow AW003 reason="..."`, an `AssertWatch-Allow:` commit trailer) don't
 suppress anything; they are reported as AW000 for a human to approve.
 
+### Who made the change
+
+Every finding names its author, `ai`, `mixed`, `human` or `unknown`, and the evidence, in
+all three formats (`author: ai (commit 1a2b3c4d5e6f: Co-Authored-By: Claude ...)`). The
+evidence, strongest first:
+
+1. **The Claude Code hook.** Everything since the session's recorded start is `ai`, whoever
+   the commits name. Without a recorded start, uncommitted changes are `ai` and other commits
+   are `unknown` (an earlier agent session may have made them).
+2. **[Agent Trace](https://agent-trace.dev) records**, if the repo keeps them as JSON or JSON
+   Lines under `.agent-trace/`: a record for a commit in the range that names the file with an
+   `ai` or `mixed` contributor. They are read, never required.
+3. **Commit identities and trailers** of the commits in the range that touched the file:
+   `Co-Authored-By: Claude` (and Copilot, Codex, Cursor, Devin, Jules, Gemini, Aider, ...),
+   "Generated with Claude Code", agent accounts (GitHub's Copilot agent, Cursor's agent) and
+   any `[bot]` account except the formatting and dependency bots (pre-commit-ci, Dependabot,
+   Renovate). Add your own regexes with `ai_patterns`.
+4. A file changed only by commits with none of these is `human`; one changed by both kinds is
+   `mixed`; uncommitted changes outside the hook, or no commit at all, are `unknown`.
+
+Evidence only ever adds AI: a record that claims a human never outweighs a trailer. Routing,
+read from the base like the rest of the config, then decides what a blocking finding becomes:
+
+```toml
+[routing]
+ai = "block"        # default
+mixed = "block"
+unknown = "block"
+human = "warn"      # default; set "block" to block human changes too
+ai_patterns = ["^my-agent <agent@example[.]com>$"]   # optional, added to the defaults
+```
+
+A routed finding says so (`block lowered to warn by [routing]`), and `--fail-on warn` still
+fails on it. Proposed waivers (AW000) are never routed. Anything invalid in `[routing]` (an
+unknown value, a misspelled key), or a config file that doesn't parse, means "block" for every
+author. A merge commit counts as touching what it changed against its first parent, so edits
+made while resolving a merge are attributed to whoever made the merge.
+
+**The `human` default trusts what commits say about themselves.** Author names and trailers
+are written by whoever makes the commit: an agent that commits under your git identity
+without a trailer (some setups strip it) reads as `human` in CI, and its weakenings become
+warnings. Only the hook's session evidence can't be rewritten by the agent. If agents commit
+in your repo without a reliable trailer, or you can't rule that out, set `human = "block"`.
+
 ## How well it works
 
 `make eval` replays the labelled corpus in [`corpus/cases/`](corpus/cases): small, complete
 changes, each one a cheat that should be caught or a refactor that shouldn't be blocked. The
 refactors are modeled on real commits from open-source projects that earlier versions
-blocked. Results today: **81 of 85 cheats caught, 1 of 64 refactors blocked** (95% recall,
-2% false positives on refactors; 2 more refactors get a warning). That includes 34 Java
-cheats and 24 Java refactors, all handled.
+blocked. Results today: **118 of 124 cheats caught, 1 of 79 refactors blocked** (95% recall,
+1% false positives on refactors; 2 more refactors get a warning). That includes 71 Java
+cheats and 39 Java refactors; two of the Java cheats are known misses (below). Cases are
+committed as an AI agent's change unless they say otherwise; two check routing (a human's
+weakening warns, the same change with a `Co-Authored-By: Claude` trailer blocks).
 
 - **Missed:** a check for exactly two warnings swapped one-for-one for
   `pytest.warns`, which passes on one: the count stays the same and nothing compares the two.
   And a property test whose Hypothesis input range was narrowed. And a test moved to a new
   file (or given a body import) that points at a stand-in for the code under test: a test
-  that keeps its name is read as moved, and imports aren't compared.
+  that keeps its name is read as moved, and imports aren't compared. In Java builds: a
+  module that starts reading a property already set to `true` in a pom the change doesn't
+  touch, and CI starting to build with an existing profile that skips tests (`-Pquick`):
+  AW009 reads only the files in the change.
 - **Blocked by mistake:** a warning checked through a CLI runner's `result.exception`,
   replaced by `pytest.warns(..., match=...)`. Nothing ties `result.exception` to the warning
   the way a `catch_warnings(record=True)` capture is tied, so the dropped checks can't be

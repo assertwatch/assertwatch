@@ -24,7 +24,14 @@ def render_json(report: Report) -> str:
             "info": report.count(Severity.INFO),
             "waived": len(report.waived),
         },
-        "findings": [{**asdict(f), "severity": str(f.severity)} for f in report.findings],
+        "findings": [
+            {
+                **asdict(f),
+                "severity": str(f.severity),
+                "routed_from": None if f.routed_from is None else str(f.routed_from),
+            }
+            for f in report.findings
+        ],
         "errors": report.errors,
     }
     return json.dumps(data, indent=2, sort_keys=True) + "\n"

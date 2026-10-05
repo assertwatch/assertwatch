@@ -67,5 +67,17 @@ def plural(count: int, word: str) -> str:
     return f"{count} {word}{'' if count == 1 else 's'}"
 
 
+def authored(finding: Finding) -> str | None:
+    """Who made the change and the evidence, plus any routing; None without attribution."""
+    if finding.author is None:
+        return None
+    text = finding.author
+    if finding.author_source:
+        text += f" ({finding.author_source})"
+    if finding.routed_from is not None:
+        text += f"; {finding.routed_from} lowered to {finding.severity} by [routing]"
+    return text
+
+
 def location(finding: Finding) -> str:
     return f"{finding.path}:{finding.line}" if finding.line else finding.path

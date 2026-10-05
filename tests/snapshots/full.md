@@ -10,10 +10,10 @@ These were added in this change, so they don't suppress anything yet. Approve on
 
 ### Findings
 
-| Severity | Rule | Location | Finding |
-|---|---|---|---|
-| block | AW002 | `tests/test_refund.py:12` | `test_refund` has 2 assertion(s), down from 3. |
-| warn | AW004 | `tests/test_pay.py:40` | Assertion weakened in `test_total`: an equality check became a not-None check. |
+| Severity | Rule | Location | Finding | Author |
+|---|---|---|---|---|
+| block | AW002 | `tests/test_refund.py:12` | `test_refund` has 2 assertion(s), down from 3. | ai (commit 0123456789ab: Co-Authored-By: Claude <noreply@anthropic.com>) |
+| warn | AW004 | `tests/test_pay.py:40` | Assertion weakened in `test_total`: an equality check became a not-None check. | human (commit fedcba987654 by Dev <dev@example.com>, no AI signal); block lowered to warn by [routing] |
 
 <details><summary>AW002 <code>tests/test_refund.py:12</code></summary>
 

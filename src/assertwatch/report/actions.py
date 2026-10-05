@@ -11,7 +11,7 @@ from collections.abc import Mapping
 from typing import TextIO
 
 from assertwatch.model import Finding, Severity
-from assertwatch.report import Report, failing
+from assertwatch.report import Report, authored, failing
 from assertwatch.report.github import render_github
 
 _LEVEL = {Severity.BLOCK: "warning", Severity.WARN: "warning", Severity.INFO: "notice"}
@@ -62,6 +62,9 @@ def _message(finding: Finding) -> str:
         text += f" (line {finding.line} before the change)"
     if finding.hint:
         text += f"\n{finding.hint}"
+    author = authored(finding)
+    if author:
+        text += f"\nAuthor: {author}"
     return text
 
 
