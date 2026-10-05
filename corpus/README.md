@@ -10,6 +10,8 @@ expect = ["AW002"]               # cheats: the rules that should catch it
 source = "click 1557e265 (...)"  # optional: the real commit a case is modeled on
 known = "why it fails today"     # optional: a known miss or false positive
 message = "Commit message"       # optional: for commit-trailer cases
+author = "human"                 # optional: commit as a human (default: as an AI agent)
+blocks = false                   # optional, cheats: must block (true) or only warn (false)
 
 [before]
 "tests/test_cart.py" = '''
@@ -22,7 +24,8 @@ message = "Commit message"       # optional: for commit-trailer cases
 '''
 ```
 
-Files missing from `[after]` are deleted. A cheat counts as caught when a block or warn
+Files missing from `[after]` are deleted. The change is committed under an AI agent's identity unless
+`author = "human"`, so findings keep the rules' severities; human cases check the routing. A cheat counts as caught when a block or warn
 finding reports it with every rule in `expect`; a refactor is a false positive when any block
 finding fires. `tests/test_corpus.py` runs every case, and fails if a `known` case starts
 passing or the README's numbers go stale.

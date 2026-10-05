@@ -2,11 +2,13 @@ AssertWatch: 3 findings (2 block, 1 warn) in 4 test files, 0123456789ab..fedcba9
 
 tests/test_refund.py:12  AW002 [block]  `test_refund` has 2 assertion(s), down from 3.
     test: tests/test_refund.py::test_refund
+    author: ai (commit 0123456789ab: Co-Authored-By: Claude <noreply@anthropic.com>)
     - assert refund.currency == 'USD'
     fix: Restore the removed assertion(s) and fix the code so they pass.
 
 tests/test_pay.py:40  AW004 [warn]  Assertion weakened in `test_total`: an equality check became a not-None check.
     test: tests/test_pay.py::TestPay::test_total
+    author: human (commit fedcba987654 by Dev <dev@example.com>, no AI signal); block lowered to warn by [routing]
     - assert total() == 10 | 2
     + assert total() is not None
     fix: Restore the stricter assertion and fix the code so it passes.

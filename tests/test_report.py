@@ -26,6 +26,8 @@ FINDINGS = [
         test_id="tests/test_refund.py::test_refund",
         before="assert refund.currency == 'USD'",
         hint="Restore the removed assertion(s) and fix the code so they pass.",
+        author="ai",
+        author_source="commit 0123456789ab: Co-Authored-By: Claude <noreply@anthropic.com>",
     ),
     Finding(
         rule="AW004",
@@ -37,6 +39,9 @@ FINDINGS = [
         before="assert total() == 10 | 2",
         after="assert total() is not None",
         hint="Restore the stricter assertion and fix the code so it passes.",
+        author="human",
+        author_source="commit fedcba987654 by Dev <dev@example.com>, no AI signal",
+        routed_from=Severity.BLOCK,
     ),
     Finding(
         rule="AW000",

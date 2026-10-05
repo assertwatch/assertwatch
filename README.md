@@ -242,14 +242,60 @@ Waivers added in the change itself (a new `[[allow]]`, an inline
 `# assertwatch: allow AW003 reason="..."`, an `AssertWatch-Allow:` commit trailer) don't
 suppress anything; they are reported as AW000 for a human to approve.
 
+### Who made the change
+
+Every finding names its author, `ai`, `mixed`, `human` or `unknown`, and the evidence, in
+all three formats (`author: ai (commit 1a2b3c4d5e6f: Co-Authored-By: Claude ...)`). The
+evidence, strongest first:
+
+1. **The Claude Code hook.** Everything since the session's recorded start is `ai`, whoever
+   the commits name. Without a recorded start, uncommitted changes are `ai` and other commits
+   are `unknown` (an earlier agent session may have made them).
+2. **[Agent Trace](https://agent-trace.dev) records**, if the repo keeps them as JSON or JSON
+   Lines under `.agent-trace/`: a record for a commit in the range that names the file with an
+   `ai` or `mixed` contributor. They are read, never required.
+3. **Commit identities and trailers** of the commits in the range that touched the file:
+   `Co-Authored-By: Claude` (and Copilot, Codex, Cursor, Devin, Jules, Gemini, Aider, ...),
+   "Generated with Claude Code", agent accounts (GitHub's Copilot agent, Cursor's agent) and
+   any `[bot]` account except the formatting and dependency bots (pre-commit-ci, Dependabot,
+   Renovate). Add your own regexes with `ai_patterns`.
+4. A file changed only by commits with none of these is `human`; one changed by both kinds is
+   `mixed`; uncommitted changes outside the hook, or no commit at all, are `unknown`.
+
+Evidence only ever adds AI: a record that claims a human never outweighs a trailer. Routing,
+read from the base like the rest of the config, then decides what a blocking finding becomes:
+
+```toml
+[routing]
+ai = "block"        # default
+mixed = "block"
+unknown = "block"
+human = "warn"      # default; set "block" to block human changes too
+ai_patterns = ["^my-agent <agent@example[.]com>$"]   # optional, added to the defaults
+```
+
+A routed finding says so (`block lowered to warn by [routing]`), and `--fail-on warn` still
+fails on it. Proposed waivers (AW000) are never routed. Anything invalid in `[routing]` (an
+unknown value, a misspelled key), or a config file that doesn't parse, means "block" for every
+author. A merge commit counts as touching what it changed against its first parent, so edits
+made while resolving a merge are attributed to whoever made the merge.
+
+**The `human` default trusts what commits say about themselves.** Author names and trailers
+are written by whoever makes the commit: an agent that commits under your git identity
+without a trailer (some setups strip it) reads as `human` in CI, and its weakenings become
+warnings. Only the hook's session evidence can't be rewritten by the agent. If agents commit
+in your repo without a reliable trailer, or you can't rule that out, set `human = "block"`.
+
 ## How well it works
 
 `make eval` replays the labelled corpus in [`corpus/cases/`](corpus/cases): small, complete
 changes, each one a cheat that should be caught or a refactor that shouldn't be blocked. The
 refactors are modeled on real commits from open-source projects that earlier versions
-blocked. Results today: **116 of 122 cheats caught, 1 of 79 refactors blocked** (95% recall,
+blocked. Results today: **118 of 124 cheats caught, 1 of 79 refactors blocked** (95% recall,
 1% false positives on refactors; 2 more refactors get a warning). That includes 71 Java
-cheats and 39 Java refactors; two of the Java cheats are known misses (below).
+cheats and 39 Java refactors; two of the Java cheats are known misses (below). Cases are
+committed as an AI agent's change unless they say otherwise; two check routing (a human's
+weakening warns, the same change with a `Co-Authored-By: Claude` trailer blocks).
 
 - **Missed:** a check for exactly two warnings swapped one-for-one for
   `pytest.warns`, which passes on one: the count stays the same and nothing compares the two.

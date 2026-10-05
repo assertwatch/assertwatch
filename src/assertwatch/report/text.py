@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from assertwatch.model import Finding, Severity
-from assertwatch.report import WAIVER_RULE, Report, location, plural
+from assertwatch.report import WAIVER_RULE, Report, authored, location, plural
 
 
 def render_text(report: Report) -> str:
@@ -44,6 +44,9 @@ def _finding(finding: Finding) -> list[str]:
     lines = [f"{location(finding)}  {finding.rule} [{finding.severity}]  {finding.message}"]
     if finding.test_id:
         lines.append(f"    test: {finding.test_id}")
+    author = authored(finding)
+    if author:
+        lines.append(f"    author: {author}")
     for prefix, text in (("- ", finding.before), ("+ ", finding.after)):
         if text:
             lines.extend(f"    {prefix}{line}" for line in text.splitlines())

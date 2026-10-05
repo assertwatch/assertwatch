@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from assertwatch.model import Finding, Severity
-from assertwatch.report import WAIVER_RULE, Report, location, plural
+from assertwatch.report import WAIVER_RULE, Report, authored, location, plural
 
 
 def render_github(report: Report) -> str:
@@ -34,10 +34,11 @@ def render_github(report: Report) -> str:
         out.extend(f"- `{location(f)}`: {_cell(f.message)}" for f in proposed)
 
     if regular:
-        out += ["", "### Findings", "", "| Severity | Rule | Location | Finding |"]
-        out.append("|---|---|---|---|")
+        out += ["", "### Findings", "", "| Severity | Rule | Location | Finding | Author |"]
+        out.append("|---|---|---|---|---|")
         out.extend(
-            f"| {f.severity} | {f.rule} | `{_cell(location(f))}` | {_cell(f.message)} |"
+            f"| {f.severity} | {f.rule} | `{_cell(location(f))}` | {_cell(f.message)} "
+            f"| {_cell(authored(f) or 'not attributed')} |"
             for f in regular
         )
         details = [f for f in regular if f.before or f.after]
