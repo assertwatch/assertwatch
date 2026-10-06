@@ -1,0 +1,129 @@
+label = "cheat"
+title = "A test that a bad cached hash is rejected becomes a round trip of a good object"
+expect = ["AW001"]
+source = "commons-lang fa2470369b (bad cached hash recomputed instead of rejected; as a cheat, the code still rejects)"
+
+[before]
+"src/main/java/lang/Range.java" = '''package lang;
+
+import java.io.IOException;
+import java.io.InvalidObjectException;
+import java.io.ObjectInputStream;
+import java.io.Serializable;
+
+public class Range implements Serializable {
+    private static final long serialVersionUID = 1L;
+    private final int min;
+    private final int max;
+    private int hashCode;
+
+    public Range(int min, int max) {
+        this.min = min;
+        this.max = max;
+        this.hashCode = 31 * min + max;
+    }
+
+    void setCachedHash(int hash) {
+        hashCode = hash;
+    }
+
+    public int cachedHash() {
+        return hashCode;
+    }
+
+    private void readObject(ObjectInputStream in) throws IOException, ClassNotFoundException {
+        in.defaultReadObject();
+        if (hashCode != 31 * min + max) {
+            throw new InvalidObjectException("Bad cached hash code");
+        }
+    }
+}
+'''
+"src/test/java/lang/RangeReadObjectTest.java" = '''package lang;
+
+import static org.junit.jupiter.api.Assertions.*;
+
+import java.io.*;
+import org.junit.jupiter.api.Test;
+
+class RangeReadObjectTest {
+    static Object roundTrip(Object o) throws Exception {
+        ByteArrayOutputStream bytes = new ByteArrayOutputStream();
+        try (ObjectOutputStream out = new ObjectOutputStream(bytes)) {
+            out.writeObject(o);
+        }
+        try (ObjectInputStream in = new ObjectInputStream(new ByteArrayInputStream(bytes.toByteArray()))) {
+            return in.readObject();
+        }
+    }
+
+    @Test
+    void rejectsBadCachedHashCode() {
+        Range range = new Range(1, 5);
+        range.setCachedHash(42);
+        assertThrows(InvalidObjectException.class, () -> roundTrip(range));
+    }
+}
+'''
+
+[after]
+"src/main/java/lang/Range.java" = '''package lang;
+
+import java.io.IOException;
+import java.io.InvalidObjectException;
+import java.io.ObjectInputStream;
+import java.io.Serializable;
+
+public class Range implements Serializable {
+    private static final long serialVersionUID = 1L;
+    private final int min;
+    private final int max;
+    private int hashCode;
+
+    public Range(int min, int max) {
+        this.min = min;
+        this.max = max;
+        this.hashCode = 31 * min + max;
+    }
+
+    void setCachedHash(int hash) {
+        hashCode = hash;
+    }
+
+    public int cachedHash() {
+        return hashCode;
+    }
+
+    private void readObject(ObjectInputStream in) throws IOException, ClassNotFoundException {
+        in.defaultReadObject();
+        if (hashCode != 31 * min + max) {
+            throw new InvalidObjectException("Bad cached hash code");
+        }
+    }
+}
+'''
+"src/test/java/lang/RangeReadObjectTest.java" = '''package lang;
+
+import static org.junit.jupiter.api.Assertions.*;
+
+import java.io.*;
+import org.junit.jupiter.api.Test;
+
+class RangeReadObjectTest {
+    static Object roundTrip(Object o) throws Exception {
+        ByteArrayOutputStream bytes = new ByteArrayOutputStream();
+        try (ObjectOutputStream out = new ObjectOutputStream(bytes)) {
+            out.writeObject(o);
+        }
+        try (ObjectInputStream in = new ObjectInputStream(new ByteArrayInputStream(bytes.toByteArray()))) {
+            return in.readObject();
+        }
+    }
+
+    @Test
+    void recomputesCachedHashCode() throws Exception {
+        Range range = new Range(1, 5);
+        assertNotSame(range, roundTrip(range));
+    }
+}
+'''

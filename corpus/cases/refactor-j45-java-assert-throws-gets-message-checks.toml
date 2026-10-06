@@ -1,0 +1,110 @@
+label = "refactor"
+title = "Bare assertThrows calls keep their result and check its message; a case is added"
+source = "jsoup e0019ebf33 (improved test coverage for selector exceptions)"
+
+[before]
+"src/main/java/select/QueryParser.java" = '''package select;
+
+public class QueryParser {
+    public static class SelectorParseException extends IllegalStateException {
+        public SelectorParseException(String message) { super(message); }
+    }
+
+    public static String parse(String query) {
+        if (query == null || query.isEmpty()) {
+            throw new SelectorParseException("String must not be empty");
+        }
+        String key = query.replace("[", "").replace("]", "").trim();
+        if (key.startsWith("abs:") && key.substring(4).replaceAll("[!^$*~]?=", "").isEmpty()) {
+            throw new SelectorParseException("Absolute attribute key must have a name");
+        }
+        int open = query.indexOf('"');
+        if (open >= 0 && query.indexOf('"', open + 1) < 0) {
+            throw new SelectorParseException("Did not find balanced marker at '" + query.substring(0, open) + "'");
+        }
+        return key;
+    }
+}
+'''
+"src/test/java/select/QueryParserTest.java" = '''package select;
+
+import static org.junit.jupiter.api.Assertions.*;
+
+import org.junit.jupiter.api.Test;
+
+public class QueryParserTest {
+    @Test public void exceptionOnUncloseAttribute() {
+        assertThrows(QueryParser.SelectorParseException.class, () -> QueryParser.parse("section > a[href=\"]"));
+    }
+
+    @Test public void exceptOnEmptySelector() {
+        assertThrows(QueryParser.SelectorParseException.class, () -> QueryParser.parse(""));
+    }
+
+    @Test public void exceptOnNullSelector() {
+        assertThrows(QueryParser.SelectorParseException.class, () -> QueryParser.parse(null));
+    }
+}
+'''
+
+[after]
+"src/main/java/select/QueryParser.java" = '''package select;
+
+public class QueryParser {
+    public static class SelectorParseException extends IllegalStateException {
+        public SelectorParseException(String message) { super(message); }
+    }
+
+    public static String parse(String query) {
+        if (query == null || query.isEmpty()) {
+            throw new SelectorParseException("String must not be empty");
+        }
+        String key = query.replace("[", "").replace("]", "").trim();
+        if (key.startsWith("abs:") && key.substring(4).replaceAll("[!^$*~]?=", "").isEmpty()) {
+            throw new SelectorParseException("Absolute attribute key must have a name");
+        }
+        int open = query.indexOf('"');
+        if (open >= 0 && query.indexOf('"', open + 1) < 0) {
+            throw new SelectorParseException("Did not find balanced marker at '" + query.substring(0, open) + "'");
+        }
+        return key;
+    }
+}
+'''
+"src/test/java/select/QueryParserTest.java" = '''package select;
+
+import static org.junit.jupiter.api.Assertions.*;
+import static select.QueryParser.SelectorParseException;
+
+import org.junit.jupiter.api.Test;
+
+public class QueryParserTest {
+
+    @Test
+    public void exceptionOnUncloseAttribute() {
+        QueryParser.SelectorParseException exception =
+            assertThrows(QueryParser.SelectorParseException.class, () -> QueryParser.parse("section > a[href=\"]"));
+        assertEquals(
+            "Did not find balanced marker at 'section > a[href='",
+            exception.getMessage());
+    }
+
+    @Test
+    public void exceptOnEmptySelector() {
+        SelectorParseException exception = assertThrows(SelectorParseException.class, () -> QueryParser.parse(""));
+        assertEquals("String must not be empty", exception.getMessage());
+    }
+
+    @Test
+    public void exceptOnNullSelector() {
+        SelectorParseException exception = assertThrows(SelectorParseException.class, () -> QueryParser.parse(null));
+        assertEquals("String must not be empty", exception.getMessage());
+    }
+
+    @Test
+    public void exceptOnEmptyAbsKey() {
+        SelectorParseException exception = assertThrows(SelectorParseException.class, () -> QueryParser.parse("[abs:=]"));
+        assertEquals("Absolute attribute key must have a name", exception.getMessage());
+    }
+}
+'''

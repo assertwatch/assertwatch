@@ -1,0 +1,103 @@
+label = "refactor"
+title = "A loop body moves into a private helper and its check gains a message"
+source = "jackson-core b2c1e70ede (TestJsonStringEncoder._quoteAsUTF8)"
+
+[before]
+"src/main/java/core/StringEncoder.java" = '''package core;
+
+import java.nio.charset.StandardCharsets;
+
+public class StringEncoder {
+    public static byte[] quoteAsUTF8(String s) {
+        return s.replace("\\", "\\\\").replace("\"", "\\\"").getBytes(StandardCharsets.UTF_8);
+    }
+
+    public static String quote(String s) {
+        return "\"" + new String(quoteAsUTF8(s), StandardCharsets.UTF_8) + "\"";
+    }
+}
+'''
+"src/test/java/core/StringEncoderTest.java" = '''package core;
+
+import static org.junit.jupiter.api.Assertions.*;
+
+import java.nio.charset.StandardCharsets;
+import org.junit.jupiter.api.Test;
+
+class StringEncoderTest {
+    static String generateRandom(int length) {
+        StringBuilder sb = new StringBuilder();
+        java.util.Random r = new java.util.Random(length);
+        for (int i = 0; i < length; i++) sb.append((char) (32 + r.nextInt(90)));
+        return sb.toString();
+    }
+
+    @Test
+    void quoteLongAsUTF8() throws Exception {
+        int[] lengths = new int[] {
+            5, 19, 200, 7000, 21000, 37000
+        };
+        for (int length : lengths) {
+            String str = generateRandom(length);
+            String encoded = StringEncoder.quote(str);
+            // ok, except need to remove surrounding quotes
+            encoded = encoded.substring(1, encoded.length() - 1);
+            byte[] expected = encoded.getBytes(StandardCharsets.UTF_8);
+            byte[] actual = StringEncoder.quoteAsUTF8(str);
+            assertArrayEquals(expected, actual);
+        }
+    }
+}
+'''
+
+[after]
+"src/main/java/core/StringEncoder.java" = '''package core;
+
+import java.nio.charset.StandardCharsets;
+
+public class StringEncoder {
+    public static byte[] quoteAsUTF8(String s) {
+        return s.replace("\\", "\\\\").replace("\"", "\\\"").getBytes(StandardCharsets.UTF_8);
+    }
+
+    public static String quote(String s) {
+        return "\"" + new String(quoteAsUTF8(s), StandardCharsets.UTF_8) + "\"";
+    }
+}
+'''
+"src/test/java/core/StringEncoderTest.java" = '''package core;
+
+import static org.junit.jupiter.api.Assertions.*;
+
+import java.nio.charset.StandardCharsets;
+import org.junit.jupiter.api.Test;
+
+class StringEncoderTest {
+    static String generateRandom(int length) {
+        StringBuilder sb = new StringBuilder();
+        java.util.Random r = new java.util.Random(length);
+        for (int i = 0; i < length; i++) sb.append((char) (32 + r.nextInt(90)));
+        return sb.toString();
+    }
+
+    @Test
+    void quoteLongAsUTF8() throws Exception {
+        for (int length : new int[] {
+                5, 19, 200, 7000, 21000, 37000
+            }) {
+            _quoteAsUTF8(length);
+        }
+    }
+
+    private void _quoteAsUTF8(int length) throws Exception {
+        String str = generateRandom(length);
+        String encoded = StringEncoder.quote(str);
+        // ok, except need to remove surrounding quotes
+        encoded = encoded.substring(1, encoded.length() - 1);
+        byte[] expected = encoded.getBytes(StandardCharsets.UTF_8);
+        byte[] actual = StringEncoder.quoteAsUTF8(str);
+        assertArrayEquals(expected, actual,
+                "For content length " + length);
+    }
+}
+'''

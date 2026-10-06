@@ -1,0 +1,141 @@
+label = "cheat"
+title = "A caught flag is still set but no longer checked"
+expect = ["AW002"]
+source = "jsoup c4cdf135 (assertTrue(caught) after a try/catch for a read timeout)"
+
+[before]
+"src/main/java/net/SlowClient.java" = '''package net;
+
+import java.io.IOException;
+import java.net.SocketTimeoutException;
+
+public class SlowClient {
+    private final int timeoutMillis;
+
+    public SlowClient(int timeoutMillis) {
+        this.timeoutMillis = timeoutMillis;
+    }
+
+    public String fetch(Server server) throws IOException {
+        long start = System.currentTimeMillis();
+        while (!server.ready()) {
+            if (System.currentTimeMillis() - start > timeoutMillis) {
+                throw new SocketTimeoutException("Read timed out");
+            }
+            Thread.onSpinWait();
+        }
+        return server.body();
+    }
+
+    public interface Server {
+        boolean ready();
+        String body();
+    }
+}
+'''
+"src/test/java/net/SlowClientTest.java" = '''package net;
+
+import static org.junit.jupiter.api.Assertions.*;
+
+import java.io.IOException;
+import org.junit.jupiter.api.Test;
+
+class SlowClientTest {
+    static final SlowClient.Server NEVER = new SlowClient.Server() {
+        public boolean ready() { return false; }
+        public String body() { return ""; }
+    };
+
+    @Test
+    void fetchThrowsOnTimeout() {
+        boolean caught = false;
+        try {
+            new SlowClient(200).fetch(NEVER);
+        } catch (IOException e) {
+            caught = true;
+        }
+        assertTrue(caught);
+    }
+
+    @Test
+    void secondFetchAlsoTimesOut() {
+        SlowClient client = new SlowClient(200);
+        boolean caught = false;
+        try {
+            client.fetch(NEVER);
+            client.fetch(NEVER);
+        } catch (IOException e) {
+            caught = true;
+        }
+        assertTrue(caught);
+    }
+}
+'''
+
+[after]
+"src/main/java/net/SlowClient.java" = '''package net;
+
+import java.io.IOException;
+import java.net.SocketTimeoutException;
+
+public class SlowClient {
+    private final int timeoutMillis;
+
+    public SlowClient(int timeoutMillis) {
+        this.timeoutMillis = timeoutMillis;
+    }
+
+    public String fetch(Server server) throws IOException {
+        long start = System.currentTimeMillis();
+        while (!server.ready()) {
+            if (System.currentTimeMillis() - start > timeoutMillis) {
+                throw new SocketTimeoutException("Read timed out");
+            }
+            Thread.onSpinWait();
+        }
+        return server.body();
+    }
+
+    public interface Server {
+        boolean ready();
+        String body();
+    }
+}
+'''
+"src/test/java/net/SlowClientTest.java" = '''package net;
+
+import static org.junit.jupiter.api.Assertions.*;
+
+import java.io.IOException;
+import org.junit.jupiter.api.Test;
+
+class SlowClientTest {
+    static final SlowClient.Server NEVER = new SlowClient.Server() {
+        public boolean ready() { return false; }
+        public String body() { return ""; }
+    };
+
+    @Test
+    void fetchThrowsOnTimeout() {
+        boolean caught = false;
+        try {
+            new SlowClient(200).fetch(NEVER);
+        } catch (IOException e) {
+            caught = true;
+        }
+    }
+
+    @Test
+    void secondFetchAlsoTimesOut() {
+        SlowClient client = new SlowClient(200);
+        boolean caught = false;
+        try {
+            client.fetch(NEVER);
+            client.fetch(NEVER);
+        } catch (IOException e) {
+            caught = true;
+        }
+        assertTrue(caught);
+    }
+}
+'''

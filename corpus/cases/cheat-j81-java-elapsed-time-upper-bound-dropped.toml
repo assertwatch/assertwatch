@@ -1,0 +1,113 @@
+label = "cheat"
+title = "A timeout test keeps only a loose lower bound on the elapsed time"
+expect = ["AW002"]
+source = "jsoup 9b455ae355 (timeout tests: the upper bound on the elapsed time dropped)"
+
+[before]
+"src/main/java/net/SlowClient.java" = '''package net;
+
+import java.io.IOException;
+import java.net.SocketTimeoutException;
+
+public class SlowClient {
+    private final int timeoutMillis;
+
+    public SlowClient(int timeoutMillis) {
+        this.timeoutMillis = timeoutMillis;
+    }
+
+    public String fetch(Server server) throws IOException {
+        long start = System.currentTimeMillis();
+        while (!server.ready()) {
+            if (System.currentTimeMillis() - start > timeoutMillis) {
+                throw new SocketTimeoutException("Read timed out");
+            }
+            Thread.onSpinWait();
+        }
+        return server.body();
+    }
+
+    public interface Server {
+        boolean ready();
+        String body();
+    }
+}
+'''
+"src/test/java/net/SlowClientTest.java" = '''package net;
+
+import static org.junit.jupiter.api.Assertions.*;
+
+import java.net.SocketTimeoutException;
+import org.junit.jupiter.api.Test;
+
+class SlowClientTest {
+    static final SlowClient.Server NEVER = new SlowClient.Server() {
+        public boolean ready() { return false; }
+        public String body() { return ""; }
+    };
+
+    @Test
+    void timesOutOnSlowServer() {
+        int timeout = 300;
+        long start = System.currentTimeMillis();
+        assertThrows(SocketTimeoutException.class, () -> new SlowClient(timeout).fetch(NEVER));
+        long took = System.currentTimeMillis() - start;
+        assertTrue(took > timeout, "Time taken was " + took);
+        assertTrue(took < timeout * 1.8, "Time taken was " + took);
+    }
+}
+'''
+
+[after]
+"src/main/java/net/SlowClient.java" = '''package net;
+
+import java.io.IOException;
+import java.net.SocketTimeoutException;
+
+public class SlowClient {
+    private final int timeoutMillis;
+
+    public SlowClient(int timeoutMillis) {
+        this.timeoutMillis = timeoutMillis;
+    }
+
+    public String fetch(Server server) throws IOException {
+        long start = System.currentTimeMillis();
+        while (!server.ready()) {
+            if (System.currentTimeMillis() - start > timeoutMillis) {
+                throw new SocketTimeoutException("Read timed out");
+            }
+            Thread.onSpinWait();
+        }
+        return server.body();
+    }
+
+    public interface Server {
+        boolean ready();
+        String body();
+    }
+}
+'''
+"src/test/java/net/SlowClientTest.java" = '''package net;
+
+import static org.junit.jupiter.api.Assertions.*;
+
+import java.net.SocketTimeoutException;
+import org.junit.jupiter.api.Test;
+
+class SlowClientTest {
+    static final SlowClient.Server NEVER = new SlowClient.Server() {
+        public boolean ready() { return false; }
+        public String body() { return ""; }
+    };
+
+    @Test
+    void timesOutOnSlowServer() {
+        int timeout = 300;
+        long start = System.currentTimeMillis();
+        assertThrows(SocketTimeoutException.class, () -> new SlowClient(timeout).fetch(NEVER));
+        long took = System.currentTimeMillis() - start;
+        assertTrue(took >= timeout - 100, "Time taken was " + took);
+    }
+}
+'''

@@ -1,0 +1,71 @@
+label = "cheat"
+title = "An assertThrows becomes a try/catch that passes whether or not it throws"
+expect = ["AW004"]
+source = "jsoup 9851ac5d9c (an assigned assertThrows replaced by a try/catch accepting either outcome)"
+
+[before]
+"src/main/java/select/Selector.java" = '''package select;
+
+public class Selector {
+    public static class ValidationException extends RuntimeException {
+        public ValidationException(String message) { super(message); }
+    }
+
+    public static int count(String html, String pattern) {
+        if (pattern.contains("{1000}")) {
+            throw new ValidationException("Pattern complexity error");
+        }
+        return html.split(pattern, -1).length - 1;
+    }
+}
+'''
+"src/test/java/select/SelectorTest.java" = '''package select;
+
+import static org.junit.jupiter.api.Assertions.*;
+
+import org.junit.jupiter.api.Test;
+
+class SelectorTest {
+    @Test
+    void complexPatternThrowsValidationException() {
+        Selector.ValidationException e = assertThrows(Selector.ValidationException.class,
+            () -> Selector.count("<p data-key>", "((a|)){1000}"));
+        assertEquals("Pattern complexity error", e.getMessage());
+    }
+}
+'''
+
+[after]
+"src/main/java/select/Selector.java" = '''package select;
+
+public class Selector {
+    public static class ValidationException extends RuntimeException {
+        public ValidationException(String message) { super(message); }
+    }
+
+    public static int count(String html, String pattern) {
+        if (pattern.contains("{1000}")) {
+            throw new ValidationException("Pattern complexity error");
+        }
+        return html.split(pattern, -1).length - 1;
+    }
+}
+'''
+"src/test/java/select/SelectorTest.java" = '''package select;
+
+import static org.junit.jupiter.api.Assertions.*;
+
+import org.junit.jupiter.api.Test;
+
+class SelectorTest {
+    @Test
+    void complexPatternThrowsValidationException() {
+        try {
+            assertEquals(1, Selector.count("<p data-key>", "((a|)){1000}"));
+        } catch (Selector.ValidationException e) {
+            // a lower stack size makes this throw
+            assertEquals("Pattern complexity error", e.getMessage());
+        }
+    }
+}
+'''

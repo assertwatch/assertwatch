@@ -305,9 +305,9 @@ authorship is provable.
 `make eval` replays the labelled corpus in [`corpus/cases/`](corpus/cases): small, complete
 changes, each one a cheat that should be caught or a refactor that shouldn't be blocked. The
 refactors are modeled on real commits from open-source projects that earlier versions
-blocked. Results today: **129 of 136 cheats caught, 1 of 81 refactors blocked** (95% recall,
-1% false positives on refactors; 2 more refactors get a warning). That includes 82 Java
-cheats and 41 Java refactors; three of the Java cheats are known misses (below). Cases are
+blocked. Results today: **144 of 152 cheats caught, 1 of 86 refactors blocked** (95% recall,
+1% false positives on refactors; 2 more refactors get a warning). That includes 98 Java
+cheats and 46 Java refactors; four of the Java cheats are known misses (below). Cases are
 committed as an AI agent's change unless they say otherwise; three check routing (a listed
 human's weakening warns; the same change by an unlisted author, or with a
 `Co-Authored-By: Claude` trailer, blocks).
@@ -320,7 +320,9 @@ human's weakening warns; the same change by an unlisted author, or with a
   module that starts reading a property already set to `true` in a pom the change doesn't
   touch, CI starting to build with an existing profile that skips tests (`-Pquick`), and
   a test added to an excludes file that an unchanged pom already reads (`excludesFile`):
-  AW009 reads only the build and CI files in the change.
+  AW009 reads only the build and CI files in the change. And a check of a cause's exact type
+  (`assertInstanceOf(SocketTimeoutException.class, ...)`) swapped for its supertype
+  (`IOException`): the class isn't compared.
 - **Blocked by mistake:** a warning checked through a CLI runner's `result.exception`,
   replaced by `pytest.warns(..., match=...)`. Nothing ties `result.exception` to the warning
   the way a `catch_warnings(record=True)` capture is tied, so the dropped checks can't be
@@ -332,7 +334,7 @@ human's weakening warns; the same change by an unlisted author, or with a
   it.
 
 Read these numbers with care. The corpus is small, and most of it was written by the same
-people as the rules, after the rules: only 8 of the 136 cheats (and 32 of the 81 refactors)
+people as the rules, after the rules: only 23 of the 152 cheats (and 37 of the 86 refactors)
 are modeled on a real commit. Cheats an agent might invent that we haven't thought of
 aren't in it. Cases that fail on purpose are marked `known` in their file, and the test
 suite fails when one starts passing, so the numbers here stay current.

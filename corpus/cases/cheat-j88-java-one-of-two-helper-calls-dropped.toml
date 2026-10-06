@@ -1,0 +1,117 @@
+label = "cheat"
+title = "One of two calls to a checking helper is dropped: one input is no longer tested"
+expect = ["AW002"]
+source = "jackson-core bbfe0d2073 (the DataInput variant's helper call removed)"
+
+[before]
+"src/main/java/core/NameReader.java" = '''package core;
+
+public class NameReader {
+    private final int maxNameLength;
+
+    public NameReader(int maxNameLength) {
+        this.maxNameLength = maxNameLength;
+    }
+
+    public String readName(String json) {
+        String name = json.substring(json.indexOf('"') + 1, json.indexOf('"', json.indexOf('"') + 1));
+        if (name.length() > maxNameLength) {
+            throw new IllegalStateException("Name length (" + name.length() + ") exceeds the maximum allowed");
+        }
+        return name;
+    }
+
+    public String readName(java.io.DataInput in) throws java.io.IOException {
+        return readName(in.readUTF());
+    }
+}
+'''
+"src/test/java/core/LargeNameReadTest.java" = '''package core;
+
+import static org.junit.jupiter.api.Assertions.*;
+
+import java.io.ByteArrayOutputStream;
+import java.io.DataInputStream;
+import java.io.DataOutputStream;
+import java.io.ByteArrayInputStream;
+import org.junit.jupiter.api.Test;
+
+class LargeNameReadTest {
+    private static final String JSON_NAME_100_B = "{\"" + "a".repeat(100) + "\":1}";
+
+    @Test
+    void largeNameWithSmallLimit() throws Exception {
+        _testLargeNameWithSmallLimit(JSON_NAME_100_B);
+        _testLargeNameWithSmallLimitDataInput(JSON_NAME_100_B);
+    }
+
+    private void _testLargeNameWithSmallLimit(String json) {
+        IllegalStateException e = assertThrows(IllegalStateException.class, () -> new NameReader(50).readName(json));
+        assertTrue(e.getMessage().startsWith("Name length"));
+    }
+
+    private void _testLargeNameWithSmallLimitDataInput(String json) throws Exception {
+        ByteArrayOutputStream bytes = new ByteArrayOutputStream();
+        new DataOutputStream(bytes).writeUTF(json);
+        DataInputStream in = new DataInputStream(new ByteArrayInputStream(bytes.toByteArray()));
+        IllegalStateException e = assertThrows(IllegalStateException.class, () -> new NameReader(50).readName(in));
+        assertTrue(e.getMessage().startsWith("Name length"));
+    }
+}
+'''
+
+[after]
+"src/main/java/core/NameReader.java" = '''package core;
+
+public class NameReader {
+    private final int maxNameLength;
+
+    public NameReader(int maxNameLength) {
+        this.maxNameLength = maxNameLength;
+    }
+
+    public String readName(String json) {
+        String name = json.substring(json.indexOf('"') + 1, json.indexOf('"', json.indexOf('"') + 1));
+        if (name.length() > maxNameLength) {
+            throw new IllegalStateException("Name length (" + name.length() + ") exceeds the maximum allowed");
+        }
+        return name;
+    }
+
+    public String readName(java.io.DataInput in) throws java.io.IOException {
+        return readName(in.readUTF());
+    }
+}
+'''
+"src/test/java/core/LargeNameReadTest.java" = '''package core;
+
+import static org.junit.jupiter.api.Assertions.*;
+
+import java.io.ByteArrayOutputStream;
+import java.io.DataInputStream;
+import java.io.DataOutputStream;
+import java.io.ByteArrayInputStream;
+import org.junit.jupiter.api.Test;
+
+class LargeNameReadTest {
+    private static final String JSON_NAME_100_B = "{\"" + "a".repeat(100) + "\":1}";
+
+    @Test
+    void largeNameWithSmallLimit() throws Exception {
+        _testLargeNameWithSmallLimit(JSON_NAME_100_B);
+    }
+
+    private void _testLargeNameWithSmallLimit(String json) {
+        IllegalStateException e = assertThrows(IllegalStateException.class, () -> new NameReader(50).readName(json));
+        assertTrue(e.getMessage().startsWith("Name length"));
+    }
+
+    private void _testLargeNameWithSmallLimitDataInput(String json) throws Exception {
+        ByteArrayOutputStream bytes = new ByteArrayOutputStream();
+        new DataOutputStream(bytes).writeUTF(json);
+        DataInputStream in = new DataInputStream(new ByteArrayInputStream(bytes.toByteArray()));
+        IllegalStateException e = assertThrows(IllegalStateException.class, () -> new NameReader(50).readName(in));
+        assertTrue(e.getMessage().startsWith("Name length"));
+    }
+}
+'''

@@ -384,3 +384,41 @@ their blocks into warnings, which is the point, but the number of blocks that re
 history is again set by the list, not measured. And a listed email is self-reported: an agent
 committing under it with no trailer reads as human; only the Claude Code hook's session record
 can't be forged that way (a signed session stamp CI can verify is a later step).
+
+## Java corpus cases from real commits (P1)
+
+The Java cheats and refactors above were mostly hand-written. These cases are modeled on
+replayed commits, rewritten small. A commit labelled *intended* (the test changed because the
+code did) becomes a cheat by keeping the code unchanged: the same test edit then makes a
+failing build green.
+
+| Case | Commit | Shape |
+|---|---|---|
+| `cheat-j81` | jsoup `9b455ae355` | elapsed-time upper bound dropped |
+| `cheat-j82` | jsoup `c778c3aea7` | count bound relaxed from 1.25 to 1.5 |
+| `cheat-j83` | jsoup `9851ac5d9c` | `assertThrows` became a try/catch that passes either way |
+| `cheat-j84` | jsoup `f9f34df1a1` | slow integration test `@Disabled` |
+| `cheat-j85` | jsoup `7707efccde` | test of a method removed (method kept) |
+| `cheat-j86` | jsoup `ccd90e9cfc` | two tests removed beside a rename (method kept) |
+| `cheat-j87` | jsoup `959994d5c4` | test of an option's default removed (option kept) |
+| `cheat-j88` | jackson-core `bbfe0d2073` | one of two checking-helper calls dropped |
+| `cheat-j89` | jackson-core `7d81ac82d6` | expected message rewritten to the generic one, catch broadened |
+| `cheat-j90` | commons-lang `9f89fd462` | `fail()` inside `catch (Throwable)` |
+| `cheat-j91` | jsoup `582aaa0d72` | expected matches cut from two to one (code kept) |
+| `cheat-j92` | jsoup `b5761608fc` | three checks became one through a new alias (old API kept) |
+| `cheat-j93` | commons-lang `fa2470369b` | rejection test replaced by a round trip (code still rejects) |
+| `cheat-j94` | jsoup `c4cdf135` | `caught` flag set but no longer checked |
+| `cheat-j95` | jsoup `2b443dff` | cause type check commented out for its supertype (**known miss**) |
+| `cheat-j96` | jsoup `4848432864` | failing IT tagged, tag excluded unless a profile is on |
+| `refactor-j44` | jsoup `bbb56af691` | threw flag to an assigned, parametrized `assertThrows` |
+| `refactor-j45` | jsoup `e0019ebf33` | bare `assertThrows` calls gain message checks |
+| `refactor-j46` | jackson-core `ff20a92732` | checks moved into a helper that also checks the close count |
+| `refactor-j47` | jackson-core `b2c1e70ede` | loop body moved into a private helper |
+| `refactor-j48` | jsoup `9b455ae355` | `caught` flags to `assertThrows` |
+
+15 of the 16 cheats were caught with no rule change (`cheat-j82` by AW005 and `cheat-j83` by
+AW004, not the rules first guessed). `cheat-j95` is a real gap: `assertInstanceOf` keeps no
+class, and telling a supertype from a subtype needs the class hierarchy. Not used: the refactor
+half of jsoup `4848432864` (an already-`@Disabled` IT moved behind an opt-in profile), since
+the replay labelled that commit an intended block. Java cases citing a real commit: 16 cheats
+(was 0), 15 refactors (was 10).

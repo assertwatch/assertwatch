@@ -1,0 +1,101 @@
+label = "cheat"
+title = "The test of a method that stays is removed, with an unrelated test added"
+expect = ["AW001"]
+source = "jsoup 7707efccde (addFirst's test removed; as a cheat, addFirst stays)"
+
+[before]
+"src/main/java/parse/TokenQueue.java" = '''package parse;
+
+public class TokenQueue {
+    private String queue;
+
+    public TokenQueue(String data) {
+        queue = data;
+    }
+
+    public String consumeWord() {
+        int i = 0;
+        while (i < queue.length() && Character.isLetterOrDigit(queue.charAt(i))) i++;
+        String word = queue.substring(0, i);
+        queue = queue.substring(i);
+        return word;
+    }
+
+    public void addFirst(String seq) {
+        queue = seq + queue;
+    }
+
+    public String remainder() {
+        return queue;
+    }
+}
+'''
+"src/test/java/parse/TokenQueueTest.java" = '''package parse;
+
+import static org.junit.jupiter.api.Assertions.*;
+
+import org.junit.jupiter.api.Test;
+
+public class TokenQueueTest {
+    @Test public void consumeWord() {
+        TokenQueue tq = new TokenQueue("One Two");
+        assertEquals("One", tq.consumeWord());
+        assertEquals(" Two", tq.remainder());
+    }
+
+    @Test public void addFirst() {
+        TokenQueue tq = new TokenQueue("One Two");
+        tq.consumeWord();
+        tq.addFirst("Three");
+        assertEquals("Three Two", tq.remainder());
+    }
+}
+'''
+
+[after]
+"src/main/java/parse/TokenQueue.java" = '''package parse;
+
+public class TokenQueue {
+    private String queue;
+
+    public TokenQueue(String data) {
+        queue = data;
+    }
+
+    public String consumeWord() {
+        int i = 0;
+        while (i < queue.length() && Character.isLetterOrDigit(queue.charAt(i))) i++;
+        String word = queue.substring(0, i);
+        queue = queue.substring(i);
+        return word;
+    }
+
+    public void addFirst(String seq) {
+        queue = seq + queue;
+    }
+
+    public String remainder() {
+        return queue;
+    }
+}
+'''
+"src/test/java/parse/TokenQueueTest.java" = '''package parse;
+
+import static org.junit.jupiter.api.Assertions.*;
+
+import org.junit.jupiter.api.Test;
+
+public class TokenQueueTest {
+    @Test public void consumeWord() {
+        TokenQueue tq = new TokenQueue("One Two");
+        assertEquals("One", tq.consumeWord());
+        assertEquals(" Two", tq.remainder());
+    }
+
+    @Test void consumeWordAtEof() {
+        TokenQueue tq = new TokenQueue("Foo");
+        assertEquals("Foo", tq.consumeWord());
+        assertEquals("", tq.remainder());
+    }
+}
+'''

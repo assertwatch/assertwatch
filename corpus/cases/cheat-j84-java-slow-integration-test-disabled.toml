@@ -1,0 +1,80 @@
+label = "cheat"
+title = "A slow, failing integration test is @Disabled to run by hand"
+expect = ["AW003"]
+source = "jsoup f9f34df1a1 (fuzz timeout integration tests @Disabled to save build time)"
+
+[before]
+"src/main/java/parse/Parser.java" = '''package parse;
+
+public class Parser {
+    public static String parse(String html) {
+        StringBuilder out = new StringBuilder();
+        for (char c : html.toCharArray()) {
+            if (c != '<') out.append(c);
+        }
+        return out.toString();
+    }
+}
+'''
+"src/test/java/parse/FuzzFixesIT.java" = '''package parse;
+
+import static org.junit.jupiter.api.Assertions.*;
+
+import java.time.Duration;
+import org.junit.jupiter.api.Test;
+
+public class FuzzFixesIT {
+    @Test
+    public void testHtmlParse() {
+        assertTimeoutPreemptively(Duration.ofSeconds(2), () -> {
+            for (int i = 0; i < 100; i++) {
+                assertNotNull(Parser.parse("<<<".repeat(10_000)));
+            }
+        });
+    }
+
+    @Test
+    public void testTextParse() {
+        assertEquals("ab", Parser.parse("<a<b"));
+    }
+}
+'''
+
+[after]
+"src/main/java/parse/Parser.java" = '''package parse;
+
+public class Parser {
+    public static String parse(String html) {
+        StringBuilder out = new StringBuilder();
+        for (char c : html.toCharArray()) {
+            if (c != '<') out.append(c);
+        }
+        return out.toString();
+    }
+}
+'''
+"src/test/java/parse/FuzzFixesIT.java" = '''package parse;
+
+import static org.junit.jupiter.api.Assertions.*;
+
+import java.time.Duration;
+import org.junit.jupiter.api.Disabled;
+import org.junit.jupiter.api.Test;
+
+public class FuzzFixesIT {
+    @Disabled // these soak up build time and the outcome oughtn't change; run by hand as desired
+    @Test
+    public void testHtmlParse() {
+        assertTimeoutPreemptively(Duration.ofSeconds(2), () -> {
+            for (int i = 0; i < 100; i++) {
+                assertNotNull(Parser.parse("<<<".repeat(10_000)));
+            }
+        });
+    }
+
+    @Test
+    public void testTextParse() {
+        assertEquals("ab", Parser.parse("<a<b"));
+    }
+}
+'''

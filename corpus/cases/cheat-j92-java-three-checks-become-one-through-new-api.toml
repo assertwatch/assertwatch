@@ -1,0 +1,82 @@
+label = "cheat"
+title = "Three checks of an API that stays become one check of a new alias"
+expect = ["AW002"]
+source = "jsoup b5761608fc (isNode checks became one nameIs check; as a cheat, isNode stays)"
+
+[before]
+"src/main/java/nodes/Node.java" = '''package nodes;
+
+public class Node {
+    private final String name;
+
+    public Node(String name) {
+        this.name = name;
+    }
+
+    public boolean isNode(String normalName) {
+        return name.equals(normalName);
+    }
+
+    public static boolean isNode(Node node, String normalName) {
+        return node != null && node.name.equals(normalName);
+    }
+
+    public boolean nameIs(String normalName) {
+        return isNode(normalName);
+    }
+}
+'''
+"src/test/java/nodes/NodeTest.java" = '''package nodes;
+
+import static org.junit.jupiter.api.Assertions.*;
+
+import org.junit.jupiter.api.Test;
+
+public class NodeTest {
+    @Test
+    public void nodeNameChecks() {
+        Node div = new Node("div");
+        assertTrue(div.isNode("div"));
+        assertTrue(Node.isNode(div, "div"));
+        assertFalse(Node.isNode(null, "div"));
+    }
+}
+'''
+
+[after]
+"src/main/java/nodes/Node.java" = '''package nodes;
+
+public class Node {
+    private final String name;
+
+    public Node(String name) {
+        this.name = name;
+    }
+
+    public boolean isNode(String normalName) {
+        return name.equals(normalName);
+    }
+
+    public static boolean isNode(Node node, String normalName) {
+        return node != null && node.name.equals(normalName);
+    }
+
+    public boolean nameIs(String normalName) {
+        return isNode(normalName);
+    }
+}
+'''
+"src/test/java/nodes/NodeTest.java" = '''package nodes;
+
+import static org.junit.jupiter.api.Assertions.*;
+
+import org.junit.jupiter.api.Test;
+
+public class NodeTest {
+    @Test
+    public void nodeNameChecks() {
+        Node div = new Node("div");
+        assertTrue(div.nameIs("div"));
+    }
+}
+'''

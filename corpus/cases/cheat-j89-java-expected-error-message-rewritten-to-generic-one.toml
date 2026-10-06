@@ -1,0 +1,92 @@
+label = "cheat"
+title = "An expected error message is rewritten to the generic one the code gives, and the caught type broadened"
+expect = ["AW005"]
+source = "jackson-core 7d81ac82d6 (expected close-marker messages became 'Unexpected end-of-input')"
+
+[before]
+"src/main/java/core/ScopeParser.java" = '''package core;
+
+public class ScopeParser {
+    public static class StreamReadException extends RuntimeException {
+        public StreamReadException(String message) { super(message); }
+    }
+
+    public static class JsonParseException extends StreamReadException {
+        public JsonParseException(String message) { super(message); }
+    }
+
+    public static void parse(String json) {
+        int depth = 0;
+        for (char c : json.toCharArray()) {
+            if (c == '[' || c == '{') depth++;
+            if (c == ']' || c == '}') depth--;
+        }
+        if (depth > 0) {
+            throw new StreamReadException("Unexpected end-of-input");
+        }
+    }
+}
+'''
+"src/test/java/core/ScopeMatchingTest.java" = '''package core;
+
+import static org.junit.jupiter.api.Assertions.*;
+
+import org.junit.jupiter.api.Test;
+
+class ScopeMatchingTest {
+    @Test
+    void unclosedArray() {
+        try {
+            ScopeParser.parse("[ 1, 2");
+            fail("Expected an exception for unclosed ARRAY");
+        } catch (ScopeParser.JsonParseException pe) {
+            assertTrue(pe.getMessage().contains("expected close marker for ARRAY"));
+        }
+    }
+}
+'''
+
+[after]
+"src/main/java/core/ScopeParser.java" = '''package core;
+
+public class ScopeParser {
+    public static class StreamReadException extends RuntimeException {
+        public StreamReadException(String message) { super(message); }
+    }
+
+    public static class JsonParseException extends StreamReadException {
+        public JsonParseException(String message) { super(message); }
+    }
+
+    public static void parse(String json) {
+        int depth = 0;
+        for (char c : json.toCharArray()) {
+            if (c == '[' || c == '{') depth++;
+            if (c == ']' || c == '}') depth--;
+        }
+        if (depth > 0) {
+            throw new StreamReadException("Unexpected end-of-input");
+        }
+    }
+}
+'''
+"src/test/java/core/ScopeMatchingTest.java" = '''package core;
+
+import static org.junit.jupiter.api.Assertions.*;
+
+import org.junit.jupiter.api.Test;
+
+class ScopeMatchingTest {
+    @Test
+    void unclosedArray() {
+        try {
+            ScopeParser.parse("[ 1, 2");
+            fail("Expected an exception for unclosed ARRAY");
+        } catch (ScopeParser.StreamReadException pe) {
+            // not ideal but has to do
+            //assertTrue(pe.getMessage().contains("expected close marker for ARRAY"));
+            assertTrue(pe.getMessage().contains("Unexpected end-of-input"));
+        }
+    }
+}
+'''

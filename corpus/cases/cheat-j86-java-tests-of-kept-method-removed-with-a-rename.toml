@@ -1,0 +1,102 @@
+label = "cheat"
+title = "Two tests of a method that stays are removed while another test is renamed"
+expect = ["AW001"]
+source = "jsoup ccd90e9cfc (containsIgnoreCase tests removed; as a cheat, the method stays)"
+
+[before]
+"src/main/java/parse/CharacterReader.java" = '''package parse;
+
+import java.util.Locale;
+
+public class CharacterReader {
+    private final String input;
+    private int pos;
+
+    public CharacterReader(String input) {
+        this.input = input;
+    }
+
+    public char consume() {
+        return input.charAt(pos++);
+    }
+
+    public String consumeLetterSequence() {
+        int start = pos;
+        while (pos < input.length() && Character.isLetter(input.charAt(pos))) pos++;
+        return input.substring(start, pos);
+    }
+
+    public boolean containsIgnoreCase(String seq) {
+        return input.substring(pos).toLowerCase(Locale.ROOT).contains(seq.toLowerCase(Locale.ROOT));
+    }
+}
+'''
+"src/test/java/parse/CharacterReaderTest.java" = '''package parse;
+
+import static org.junit.jupiter.api.Assertions.*;
+
+import org.junit.jupiter.api.Test;
+
+public class CharacterReaderTest {
+    @Test public void consumeLetterSequence() {
+        CharacterReader r = new CharacterReader("One &bar; qux");
+        assertEquals("One", r.consumeLetterSequence());
+        assertEquals(' ', r.consume());
+    }
+
+    @Test public void containsIgnoreCase() {
+        CharacterReader r = new CharacterReader("One TWO three");
+        assertTrue(r.containsIgnoreCase("one"));
+        assertTrue(r.containsIgnoreCase("TwO"));
+        assertFalse(r.containsIgnoreCase("four"));
+    }
+
+    @Test public void containsIgnoreCaseFindsMixedCase() {
+        CharacterReader r = new CharacterReader("<p>text</TiTlE>");
+        assertTrue(r.containsIgnoreCase("</title>"));
+    }
+}
+'''
+
+[after]
+"src/main/java/parse/CharacterReader.java" = '''package parse;
+
+import java.util.Locale;
+
+public class CharacterReader {
+    private final String input;
+    private int pos;
+
+    public CharacterReader(String input) {
+        this.input = input;
+    }
+
+    public char consume() {
+        return input.charAt(pos++);
+    }
+
+    public String consumeLetterSequence() {
+        int start = pos;
+        while (pos < input.length() && Character.isLetter(input.charAt(pos))) pos++;
+        return input.substring(start, pos);
+    }
+
+    public boolean containsIgnoreCase(String seq) {
+        return input.substring(pos).toLowerCase(Locale.ROOT).contains(seq.toLowerCase(Locale.ROOT));
+    }
+}
+'''
+"src/test/java/parse/CharacterReaderTest.java" = '''package parse;
+
+import static org.junit.jupiter.api.Assertions.*;
+
+import org.junit.jupiter.api.Test;
+
+public class CharacterReaderTest {
+    @Test public void consumeLetterSequenceInAscii() {
+        CharacterReader r = new CharacterReader("One &bar; qux");
+        assertEquals("One", r.consumeLetterSequence());
+        assertEquals(' ', r.consume());
+    }
+}
+'''

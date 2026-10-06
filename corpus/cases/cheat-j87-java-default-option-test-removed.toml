@@ -1,0 +1,90 @@
+label = "cheat"
+title = "The test of an option's default is removed while the option stays"
+expect = ["AW001"]
+source = "jsoup 959994d5c4 (deprecated option's default test removed; as a cheat, the option stays)"
+
+[before]
+"src/main/java/nodes/Document.java" = '''package nodes;
+
+public class Document {
+    private final String charset;
+    private boolean updateMetaCharset;
+
+    public Document(String charset) {
+        this.charset = charset;
+    }
+
+    public void updateMetaCharsetElement(boolean update) {
+        updateMetaCharset = update;
+    }
+
+    public boolean updateMetaCharsetElement() {
+        return updateMetaCharset;
+    }
+
+    public String head() {
+        return updateMetaCharset ? "<meta charset=\"" + charset + "\">" : "";
+    }
+}
+'''
+"src/test/java/nodes/DocumentTest.java" = '''package nodes;
+
+import static org.junit.jupiter.api.Assertions.*;
+
+import org.junit.jupiter.api.Test;
+
+public class DocumentTest {
+    @Test
+    public void testMetaCharsetUpdateUtf8() {
+        Document doc = new Document("UTF-8");
+        doc.updateMetaCharsetElement(true);
+        assertEquals("<meta charset=\"UTF-8\">", doc.head());
+    }
+
+    @Test
+    public void testMetaCharsetUpdatedDisabledPerDefault() {
+        final Document doc = new Document("none");
+        assertFalse(doc.updateMetaCharsetElement());
+    }
+}
+'''
+
+[after]
+"src/main/java/nodes/Document.java" = '''package nodes;
+
+public class Document {
+    private final String charset;
+    private boolean updateMetaCharset;
+
+    public Document(String charset) {
+        this.charset = charset;
+    }
+
+    public void updateMetaCharsetElement(boolean update) {
+        updateMetaCharset = update;
+    }
+
+    public boolean updateMetaCharsetElement() {
+        return updateMetaCharset;
+    }
+
+    public String head() {
+        return updateMetaCharset ? "<meta charset=\"" + charset + "\">" : "";
+    }
+}
+'''
+"src/test/java/nodes/DocumentTest.java" = '''package nodes;
+
+import static org.junit.jupiter.api.Assertions.*;
+
+import org.junit.jupiter.api.Test;
+
+public class DocumentTest {
+    @Test
+    public void testMetaCharsetUpdateUtf8() {
+        Document doc = new Document("UTF-8");
+        doc.updateMetaCharsetElement(true);
+        assertEquals("<meta charset=\"UTF-8\">", doc.head());
+    }
+}
+'''

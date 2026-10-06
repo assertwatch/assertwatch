@@ -1,0 +1,72 @@
+label = "cheat"
+title = "An upper bound in a count check is relaxed from 1.25 to 1.5 times the expected count"
+expect = ["AW005"]
+source = "jsoup c778c3aea7 (progress-count tolerance widened from 1.25 to 1.5)"
+
+[before]
+"src/main/java/net/Download.java" = '''package net;
+
+import java.util.function.IntConsumer;
+
+public class Download {
+    public static void read(int bytes, int chunk, IntConsumer progress) {
+        for (int done = chunk; done < bytes; done += chunk) {
+            progress.accept(done);
+        }
+        progress.accept(bytes);
+    }
+}
+'''
+"src/test/java/net/DownloadTest.java" = '''package net;
+
+import static org.junit.jupiter.api.Assertions.*;
+
+import java.util.concurrent.atomic.AtomicInteger;
+import org.junit.jupiter.api.Test;
+
+class DownloadTest {
+    @Test
+    void progressIsReportedPerChunk() {
+        AtomicInteger numProgress = new AtomicInteger();
+        Download.read(64 * 1024, 1024, done -> numProgress.incrementAndGet());
+        int expected = 64;
+        int num = numProgress.get();
+        assertTrue(num > expected * 0.75);
+        assertTrue(num < expected * 1.25);
+    }
+}
+'''
+
+[after]
+"src/main/java/net/Download.java" = '''package net;
+
+import java.util.function.IntConsumer;
+
+public class Download {
+    public static void read(int bytes, int chunk, IntConsumer progress) {
+        for (int done = chunk; done < bytes; done += chunk) {
+            progress.accept(done);
+        }
+        progress.accept(bytes);
+    }
+}
+'''
+"src/test/java/net/DownloadTest.java" = '''package net;
+
+import static org.junit.jupiter.api.Assertions.*;
+
+import java.util.concurrent.atomic.AtomicInteger;
+import org.junit.jupiter.api.Test;
+
+class DownloadTest {
+    @Test
+    void progressIsReportedPerChunk() {
+        AtomicInteger numProgress = new AtomicInteger();
+        Download.read(64 * 1024, 1024, done -> numProgress.incrementAndGet());
+        int expected = 64;
+        int num = numProgress.get();
+        assertTrue(num > expected * 0.75);
+        assertTrue(num < expected * 1.5);
+    }
+}
+'''

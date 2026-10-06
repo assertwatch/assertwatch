@@ -1,0 +1,146 @@
+label = "cheat"
+title = "A failing integration test is tagged and the pom excludes the tag unless a profile is on"
+expect = ["AW009"]
+source = "jsoup 4848432864 (long-running group excluded from Failsafe by default)"
+
+[before]
+"pom.xml" = '''<project xmlns="http://maven.apache.org/POM/4.0.0">
+  <modelVersion>4.0.0</modelVersion>
+  <groupId>org.example</groupId>
+  <artifactId>parse</artifactId>
+  <version>1.0</version>
+  <properties>
+    <maven.compiler.release>17</maven.compiler.release>
+  </properties>
+  <build>
+    <plugins>
+      <plugin>
+        <groupId>org.apache.maven.plugins</groupId>
+        <artifactId>maven-failsafe-plugin</artifactId>
+        <version>3.2.5</version>
+        <executions>
+          <execution>
+            <goals>
+              <goal>integration-test</goal>
+              <goal>verify</goal>
+            </goals>
+          </execution>
+        </executions>
+      </plugin>
+    </plugins>
+  </build>
+</project>
+'''
+"src/main/java/parse/Parser.java" = '''package parse;
+
+public class Parser {
+    public static String parse(String html) {
+        StringBuilder out = new StringBuilder();
+        for (char c : html.toCharArray()) {
+            if (c != '<') out.append(c);
+        }
+        return out.toString();
+    }
+}
+'''
+"src/test/java/parse/FuzzFixesIT.java" = '''package parse;
+
+import static org.junit.jupiter.api.Assertions.*;
+
+import java.time.Duration;
+import org.junit.jupiter.api.Test;
+
+public class FuzzFixesIT {
+    @Test
+    public void testHtmlParse() {
+        assertTimeoutPreemptively(Duration.ofSeconds(2), () -> {
+            for (int i = 0; i < 100; i++) {
+                assertNotNull(Parser.parse("<<<".repeat(10_000)));
+            }
+        });
+    }
+
+    @Test
+    public void testTextParse() {
+        assertEquals("ab", Parser.parse("<a<b"));
+    }
+}
+'''
+
+[after]
+"pom.xml" = '''<project xmlns="http://maven.apache.org/POM/4.0.0">
+  <modelVersion>4.0.0</modelVersion>
+  <groupId>org.example</groupId>
+  <artifactId>parse</artifactId>
+  <version>1.0</version>
+  <properties>
+    <maven.compiler.release>17</maven.compiler.release>
+    <failsafe.excludedGroups>long-running</failsafe.excludedGroups>
+  </properties>
+  <build>
+    <plugins>
+      <plugin>
+        <groupId>org.apache.maven.plugins</groupId>
+        <artifactId>maven-failsafe-plugin</artifactId>
+        <version>3.2.5</version>
+        <configuration>
+          <excludedGroups>${failsafe.excludedGroups}</excludedGroups>
+        </configuration>
+        <executions>
+          <execution>
+            <goals>
+              <goal>integration-test</goal>
+              <goal>verify</goal>
+            </goals>
+          </execution>
+        </executions>
+      </plugin>
+    </plugins>
+  </build>
+  <profiles>
+    <profile>
+      <id>long-running</id>
+      <properties>
+        <failsafe.excludedGroups></failsafe.excludedGroups>
+      </properties>
+    </profile>
+  </profiles>
+</project>
+'''
+"src/main/java/parse/Parser.java" = '''package parse;
+
+public class Parser {
+    public static String parse(String html) {
+        StringBuilder out = new StringBuilder();
+        for (char c : html.toCharArray()) {
+            if (c != '<') out.append(c);
+        }
+        return out.toString();
+    }
+}
+'''
+"src/test/java/parse/FuzzFixesIT.java" = '''package parse;
+
+import static org.junit.jupiter.api.Assertions.*;
+
+import java.time.Duration;
+import org.junit.jupiter.api.Tag;
+import org.junit.jupiter.api.Test;
+
+public class FuzzFixesIT {
+    @Tag("long-running")
+    @Test
+    public void testHtmlParse() {
+        assertTimeoutPreemptively(Duration.ofSeconds(2), () -> {
+            for (int i = 0; i < 100; i++) {
+                assertNotNull(Parser.parse("<<<".repeat(10_000)));
+            }
+        });
+    }
+
+    @Test
+    public void testTextParse() {
+        assertEquals("ab", Parser.parse("<a<b"));
+    }
+}
+'''

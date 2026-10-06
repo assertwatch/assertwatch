@@ -1,0 +1,122 @@
+label = "refactor"
+title = "Repeated checks move into one helper, which also checks the close count"
+source = "jackson-core ff20a92732 (_verifyOneClosedOutput)"
+
+[before]
+"src/main/java/core/Generator.java" = '''package core;
+
+import java.io.IOException;
+import java.io.Writer;
+
+public class Generator {
+    public static Generator create(Writer target, boolean failInit) throws IOException {
+        if (failInit) {
+            target.close();
+            throw new IOException("Test-induced construction failure");
+        }
+        return new Generator();
+    }
+}
+'''
+"src/test/java/core/FailedConstructionCloseTest.java" = '''package core;
+
+import static org.junit.jupiter.api.Assertions.*;
+
+import java.io.FilterWriter;
+import java.io.IOException;
+import java.io.StringWriter;
+import java.io.Writer;
+import org.junit.jupiter.api.Test;
+
+class FailedConstructionCloseTest {
+    static class CloseTrackingWriter extends FilterWriter {
+        public boolean closed;
+        public int closeCount;
+
+        CloseTrackingWriter(Writer out) { super(out); }
+
+        @Override
+        public void close() throws IOException {
+            closed = true;
+            ++closeCount;
+            super.close();
+        }
+    }
+
+    @Test
+    void writerClosedOnFailedConstruction() {
+        CloseTrackingWriter w = new CloseTrackingWriter(new StringWriter());
+        IOException e = assertThrows(IOException.class, () -> Generator.create(w, true));
+        assertEquals("Test-induced construction failure", e.getMessage());
+        assertTrue(w.closed);
+    }
+
+    @Test
+    void writerClosedOnceOnFailedConstruction() {
+        CloseTrackingWriter w = new CloseTrackingWriter(new StringWriter());
+        IOException e = assertThrows(IOException.class, () -> Generator.create(w, true));
+        assertEquals("Test-induced construction failure", e.getMessage());
+        assertTrue(w.closed);
+    }
+}
+'''
+
+[after]
+"src/main/java/core/Generator.java" = '''package core;
+
+import java.io.IOException;
+import java.io.Writer;
+
+public class Generator {
+    public static Generator create(Writer target, boolean failInit) throws IOException {
+        if (failInit) {
+            target.close();
+            throw new IOException("Test-induced construction failure");
+        }
+        return new Generator();
+    }
+}
+'''
+"src/test/java/core/FailedConstructionCloseTest.java" = '''package core;
+
+import static org.junit.jupiter.api.Assertions.*;
+
+import java.io.FilterWriter;
+import java.io.IOException;
+import java.io.StringWriter;
+import java.io.Writer;
+import org.junit.jupiter.api.Test;
+
+class FailedConstructionCloseTest {
+    static class CloseTrackingWriter extends FilterWriter {
+        public boolean closed;
+        public int closeCount;
+
+        CloseTrackingWriter(Writer out) { super(out); }
+
+        @Override
+        public void close() throws IOException {
+            closed = true;
+            ++closeCount;
+            super.close();
+        }
+    }
+
+    @Test
+    void writerClosedOnFailedConstruction() {
+        _verifyOneClosedOutput(new CloseTrackingWriter(new StringWriter()));
+    }
+
+    @Test
+    void writerClosedOnceOnFailedConstruction() {
+        _verifyOneClosedOutput(new CloseTrackingWriter(new StringWriter()));
+    }
+
+    private void _verifyOneClosedOutput(CloseTrackingWriter w) {
+        IOException e = assertThrows(IOException.class, () -> Generator.create(w, true));
+        assertEquals("Test-induced construction failure", e.getMessage());
+        assertTrue(w.closed);
+        assertEquals(1, w.closeCount);
+    }
+}
+'''

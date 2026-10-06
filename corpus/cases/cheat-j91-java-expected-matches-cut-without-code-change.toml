@@ -1,0 +1,77 @@
+label = "cheat"
+title = "The expected matches drop from two to one while the selector code stays"
+expect = ["AW005"]
+source = "jsoup 582aaa0d72 (expected matches changed with the code; as a cheat, the code stays)"
+
+[before]
+"src/main/java/select/AttributeSelector.java" = '''package select;
+
+import java.util.ArrayList;
+import java.util.List;
+
+public class AttributeSelector {
+    public static List<String> withClass(List<String[]> elements, String value) {
+        List<String> found = new ArrayList<>();
+        for (String[] el : elements) {
+            if (el[0].trim().equals(value.trim())) found.add(el[1]);
+        }
+        return found;
+    }
+}
+'''
+"src/test/java/select/SelectorTest.java" = '''package select;
+
+import static org.junit.jupiter.api.Assertions.*;
+
+import java.util.List;
+import org.junit.jupiter.api.Test;
+
+public class SelectorTest {
+    @Test
+    public void matchesAttributeWithSpace() {
+        List<String[]> els = List.of(
+            new String[] {"value", "class without space"},
+            new String[] {" value ", "class with space"});
+        List<String> found = AttributeSelector.withClass(els, " value ");
+        assertEquals(2, found.size());
+        assertEquals("class without space", found.get(0));
+        assertEquals("class with space", found.get(1));
+    }
+}
+'''
+
+[after]
+"src/main/java/select/AttributeSelector.java" = '''package select;
+
+import java.util.ArrayList;
+import java.util.List;
+
+public class AttributeSelector {
+    public static List<String> withClass(List<String[]> elements, String value) {
+        List<String> found = new ArrayList<>();
+        for (String[] el : elements) {
+            if (el[0].trim().equals(value.trim())) found.add(el[1]);
+        }
+        return found;
+    }
+}
+'''
+"src/test/java/select/SelectorTest.java" = '''package select;
+
+import static org.junit.jupiter.api.Assertions.*;
+
+import java.util.List;
+import org.junit.jupiter.api.Test;
+
+public class SelectorTest {
+    @Test
+    public void matchesAttributeWithSpace() {
+        List<String[]> els = List.of(
+            new String[] {"value", "class without space"},
+            new String[] {" value ", "class with space"});
+        List<String> found = AttributeSelector.withClass(els, " value ");
+        assertEquals(1, found.size());
+        assertEquals("class with space", found.get(found.size() - 1));
+    }
+}
+'''

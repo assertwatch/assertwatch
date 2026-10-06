@@ -1,0 +1,104 @@
+label = "cheat"
+title = "assertThrows becomes try { call; fail(); } catch (Throwable) {}, which catches fail() too"
+expect = ["AW007"]
+source = "commons-lang 9f89fd462 (MemoizerTest's fail() inside catch (Throwable ex))"
+
+[before]
+"src/main/java/concurrent/Memoizer.java" = '''package concurrent;
+
+import java.util.HashMap;
+import java.util.Map;
+import java.util.function.Function;
+
+public class Memoizer<I, O> {
+    private final Function<I, O> computable;
+    private final Map<I, RuntimeException> failures = new HashMap<>();
+
+    public Memoizer(Function<I, O> computable) {
+        this.computable = computable;
+    }
+
+    public O compute(I input) {
+        RuntimeException failed = failures.get(input);
+        if (failed != null) {
+            throw new IllegalStateException("Already failed", failed);
+        }
+        try {
+            return computable.apply(input);
+        } catch (RuntimeException e) {
+            failures.put(input, e);
+            throw e;
+        }
+    }
+}
+'''
+"src/test/java/concurrent/MemoizerTest.java" = '''package concurrent;
+
+import static org.junit.jupiter.api.Assertions.*;
+
+import org.junit.jupiter.api.Test;
+
+public class MemoizerTest {
+    @Test
+    public void testDefaultBehaviourNotToRecalculateExecutionExceptions() {
+        Memoizer<Integer, Integer> memoizer = new Memoizer<>(i -> { throw new ArithmeticException("boom"); });
+        assertThrows(ArithmeticException.class, () -> memoizer.compute(1));
+        assertThrows(IllegalStateException.class, () -> memoizer.compute(1));
+    }
+}
+'''
+
+[after]
+"src/main/java/concurrent/Memoizer.java" = '''package concurrent;
+
+import java.util.HashMap;
+import java.util.Map;
+import java.util.function.Function;
+
+public class Memoizer<I, O> {
+    private final Function<I, O> computable;
+    private final Map<I, RuntimeException> failures = new HashMap<>();
+
+    public Memoizer(Function<I, O> computable) {
+        this.computable = computable;
+    }
+
+    public O compute(I input) {
+        RuntimeException failed = failures.get(input);
+        if (failed != null) {
+            throw new IllegalStateException("Already failed", failed);
+        }
+        try {
+            return computable.apply(input);
+        } catch (RuntimeException e) {
+            failures.put(input, e);
+            throw e;
+        }
+    }
+}
+'''
+"src/test/java/concurrent/MemoizerTest.java" = '''package concurrent;
+
+import static org.junit.jupiter.api.Assertions.*;
+
+import org.junit.jupiter.api.Test;
+
+public class MemoizerTest {
+    @Test
+    public void testDefaultBehaviourNotToRecalculateExecutionExceptions() {
+        Memoizer<Integer, Integer> memoizer = new Memoizer<>(i -> { throw new ArithmeticException("boom"); });
+        try {
+            memoizer.compute(1);
+            fail();
+        } catch (Throwable ex) {
+            // Should always be thrown the first time
+        }
+        try {
+            memoizer.compute(1);
+            fail();
+        } catch (Throwable ex) {
+            // and remembered the second time
+        }
+    }
+}
+'''
