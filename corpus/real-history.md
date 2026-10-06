@@ -16,13 +16,15 @@ the rules, and are being spot-checked by a human.
 | | Python | Java |
 |---|---|---|
 | Commits replayed | 1,318 | 900 |
-| Blocked | 133 (10.1%) | 53 (5.9%) |
-| Labelled of those | 53 (16 false positives) | 27 (10 false positives) |
+| Blocked | 133 (10.1%) | 54 (6.0%) |
+| Labelled of those | 53 (16 false positives) | 28 (10 false positives) |
 | Unlabelled, estimated from | 80, at 6 of 27 (second sample) | 26, at 9 of 16 (first sample) |
-| **Blocked wrongly** | **about 34, 2.6% (1.9-3.7%)** | **about 25, 2.7% (2.1-3.3%)** |
-| Blocked rightly | about 99, 7.5% | about 28, 3.2% |
+| **Blocked wrongly** | **about 34, 2.6% (1.9-3.7%)** | **about 25, 2.7% (2.1-3.3%), estimate** |
+| Blocked rightly | about 99, 7.5% | about 29, 3.2% |
 
-As of 6fedf88. The Java interval quoted further down (2.4-3.1%) was too narrow, and the
+As of 6fedf88, plus the one intended Java block AW009 added (jsoup `4848432864`); still
+true at main after P3. The Java figure is an estimate: barely half its blocks are labelled.
+The Java interval quoted further down (2.4-3.1%) was too narrow, and the
 Python one (1.6-4.1%) used different arithmetic; this table replaces both. P0 rule work on
 the wrong-block rate is closed at these numbers: what remains needs an understanding of the
 code (tests moved and rewritten), and the plan is to route human-authored changes to a
@@ -342,20 +344,43 @@ After the fix: Java 54 blocking (both languages otherwise unchanged), so the Jav
 Maven, Gradle or the CI runner, so a reader-versus-tool difference can still let a loosening
 through; an unreadable or oversized file blocks rather than passing.
 
+### AW009 reader-versus-tool differences (2026-10-05)
+
+The third security review of AW009 reported 3 reader-versus-tool findings as a summary only, and
+the details weren't kept. AW009 was reviewed again and each candidate probed against the code.
+Confirmed and fixed: a pom profile switched on by an environment or system property (CI sets
+`env.CI`) or by a condition AssertWatch doesn't model counted as off (`cheat-j70`, `j71`;
+`refactor-j42` keeps a user-property profile off); CI options that run part of the tests,
+`-Dgroups`, Surefire/Failsafe `excludesFile`/`includesFile`, Maven `-N`/`-pl`/`-rf` and Gradle's
+`-m` dry run (`cheat-j72`-`j76`; `refactor-j43`, a dry-run step beside the real build); Gradle
+properties set by name, `setProperty('ignoreFailures', true)`, `test['x']`, `test.'x'`
+(`cheat-j77`-`j79`). Still missed (`cheat-j80`, known): entries added to an excludes file that
+an unchanged pom already reads. **Replay:** no change, Python 133 and Java 54 blocking, every
+commit's findings the same.
+
 ## Routing by author (P3)
 
-**Replay with `--routing`** (each commit's own author, committer and trailers; default
-routing, human = warn): Python 133 rule-blocking commits -> 4 still block, Java 53 -> 0. All 4
-were attrs commits co-authored by `pre-commit-ci[bot]`, a formatting bot that was counted as
-an AI agent. With formatting and dependency bots no longer counted, they read as human and
-warn (checked one by one), so **no replayed commit blocks under default routing**. Of the
-2,218 commits, only a handful carry a real AI signal (2 Claude trailers in more-itertools,
-1 in click, 2 Copilot-agent commits in jackson-core, 1 Copilot Autofix in commons-lang), and
-none of those block.
+**First version, withdrawn.** P3 first read a commit with no AI signal as `human` (warn), and
+the replay then showed no replayed commit blocking (Python 133 -> 0, Java 53 -> 0). That was
+true by construction, not evidence: none of these commits carry an AI signal, so all of them
+were lowered. In CI most agent commits carry none either (no hook, trailer stripped or never
+added), so the same default would have turned almost every block into a warning, and an agent
+could get that by doing nothing.
 
-What this does and doesn't show: these are human projects, so every wrong block above becomes
-a warning, which is the point of routing. It says nothing about wrong blocks on AI-authored
-changes, which this history can't measure. And routing trusts commit metadata: an agent
-committing under a human's name with no trailer is read as human (the README says so, and
-recommends `human = "block"` where agents commit that way); only the Claude Code hook's
-session record can't be forged that way.
+**Now.** A commit with no AI signal is `unknown` and blocks. `human` needs positive evidence:
+the author email is listed in `[routing] human_authors` in the base config. `unknown = "warn"`
+is an opt-in, safe only when every agent in the organization runs the hook, so that an
+unstamped commit implies a human.
+
+**Replay with `--routing`** (default routing, no `human_authors`): Java 54 rule-blocking
+commits -> 54 still block, all `unknown`; Python 133 -> 133, all `unknown`. The block rates are the ones in
+"Current rates". Of the 2,218 commits, only a handful carry a real AI signal (2 Claude
+trailers in more-itertools, 1 in click, 2 Copilot-agent commits in jackson-core, 1 Copilot
+Autofix in commons-lang), and none of those block.
+
+What routing can't show here: these are human projects, so the replay can't measure wrong
+blocks on AI-authored changes. A team that lists its maintainers in `human_authors` turns
+their blocks into warnings, which is the point, but the number of blocks that removes on this
+history is again set by the list, not measured. And a listed email is self-reported: an agent
+committing under it with no trailer reads as human; only the Claude Code hook's session record
+can't be forged that way (a signed session stamp CI can verify is a later step).

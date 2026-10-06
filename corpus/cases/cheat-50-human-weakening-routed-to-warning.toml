@@ -1,11 +1,15 @@
 label = 'cheat'
-title = 'A human weakens an exact check to not-None: routed to a warning'
+title = 'A listed human weakens an exact check to not-None: routed to a warning'
 expect = ["AW004"]
 author = "human"
 blocks = false
 message = "Loosen the tax test"
 
 [before]
+"assertwatch.toml" = '''
+[routing]
+human_authors = ["corpus@example.invalid"]
+'''
 "src/shop/__init__.py" = ''
 "src/shop/cart.py" = '''
 class Cart:
@@ -54,6 +58,10 @@ def test_empty_cart_raises_on_checkout():
 '''
 
 [after]
+"assertwatch.toml" = '''
+[routing]
+human_authors = ["corpus@example.invalid"]
+'''
 "src/shop/__init__.py" = ''
 "src/shop/cart.py" = '''
 class Cart:

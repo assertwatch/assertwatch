@@ -40,10 +40,12 @@ test_paths = []
 # reason = "legacy suite is being retired"
 
 # What a blocking finding becomes, by who made the change (ai | mixed | human | unknown).
-# Commit identities and trailers decide "human", and they can be forged: if agents commit
-# here without a reliable Co-Authored-By trailer, set human = "block".
+# A commit is "human" only if it has no AI signal and its author email is listed below;
+# anything else without an AI signal is "unknown" and blocks. Emails can be forged: list
+# only people whose machines don't let agents commit as them.
 [routing]
 # human = "warn"
+# human_authors = ["dev@example.com"]
 """
 
 # (exit code, stdout, stderr) of a `gh` command; replaced in tests.

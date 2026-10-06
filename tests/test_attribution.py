@@ -23,6 +23,7 @@ def test_tax():
 """
 WEAKENED = TESTS.replace("== 10", "is not None")
 HUMAN = ("Dev", "dev@example.com")
+LISTED = '[routing]\nhuman_authors = ["dev@example.com"]\n'  # Dev is a known human
 TRAILER = "Co-Authored-By: Claude <noreply@anthropic.com>"
 
 
@@ -31,6 +32,7 @@ def repo(tmp_path) -> Path:
     git(tmp_path, "init", "-q", "-b", "main")
     write(tmp_path, "tests/test_cart.py", TESTS)
     write(tmp_path, "src/cart.py", "def total():\n    return 10\n")
+    write(tmp_path, "assertwatch.toml", LISTED)
     commit_all(tmp_path, "base")
     return tmp_path
 
@@ -59,7 +61,7 @@ def human_committer(monkeypatch):
     monkeypatch.setenv("GIT_COMMITTER_EMAIL", "base@example.com")
 
 
-def test_human_commit_routes_block_to_warn(repo):
+def test_listed_human_commit_routes_block_to_warn(repo):
     write(repo, "tests/test_cart.py", WEAKENED)
     sha = commit_as(repo, HUMAN)
     finding = only(check_diff(repo, f"{sha}~1", sha))
@@ -69,7 +71,80 @@ def test_human_commit_routes_block_to_warn(repo):
         Severity.BLOCK,
     )
     assert finding.author == "human"
-    assert finding.author_source == f"commit {sha[:12]} by Dev <dev@example.com>, no AI signal"
+    assert finding.author_source == (
+        f"commit {sha[:12]} by Dev <dev@example.com>, no AI signal, author in human_authors"
+    )
+
+
+@pytest.mark.parametrize(
+    "who",
+    [
+        ("Someone", "someone@example.com"),  # not listed
+        ("Dev", "dev@example.com.evil.invalid"),  # the listed email is only a prefix
+        ("Dev", "x-dev@example.com"),
+        ("dev@example.com", "other@example.com"),  # the name doesn't count, only the email
+    ],
+)
+def test_commit_without_ai_signal_or_listed_author_is_unknown_and_blocks(repo, who):
+    # In CI most agent commits carry no signal: a missing signal is no evidence of a human.
+    write(repo, "tests/test_cart.py", WEAKENED)
+    sha = commit_as(repo, who)
+    finding = only(check_diff(repo, f"{sha}~1", sha))
+    assert (finding.author, finding.severity, finding.routed_from) == (
+        "unknown",
+        Severity.BLOCK,
+        None,
+    )
+    assert finding.author_source.endswith("no AI signal, author not in human_authors")
+
+
+def test_no_human_authors_means_no_commit_is_human(repo):
+    write(repo, "assertwatch.toml", "")
+    base = commit_as(repo, HUMAN)
+    write(repo, "tests/test_cart.py", WEAKENED)
+    sha = commit_as(repo, HUMAN)
+    finding = only(check_diff(repo, base, sha))
+    assert (finding.author, finding.severity) == ("unknown", Severity.BLOCK)
+
+
+def test_human_authors_globs_and_case(repo):
+    write(repo, "assertwatch.toml", '[routing]\nhuman_authors = ["*@EXAMPLE.com"]\n')
+    base = commit_as(repo, HUMAN)
+    write(repo, "tests/test_cart.py", WEAKENED)
+    sha = commit_as(repo, ("Dev", "Dev@Example.COM"))
+    finding = only(check_diff(repo, base, sha))
+    assert (finding.author, finding.severity) == ("human", Severity.WARN)
+
+
+def test_unknown_warn_is_an_opt_in(repo):
+    # Safe only when every agent runs the hook: then a missing stamp implies a human.
+    write(repo, "assertwatch.toml", '[routing]\nunknown = "warn"\n')
+    base = commit_as(repo, HUMAN)
+    write(repo, "tests/test_cart.py", WEAKENED)
+    sha = commit_as(repo, ("Someone", "someone@example.com"))
+    finding = only(check_diff(repo, base, sha))
+    assert (finding.author, finding.severity, finding.routed_from) == (
+        "unknown",
+        Severity.WARN,
+        Severity.BLOCK,
+    )
+
+
+def test_a_listed_human_does_not_outweigh_an_ai_signal(repo):
+    write(repo, "tests/test_cart.py", WEAKENED)
+    sha = commit_as(repo, HUMAN, f"weaken\n\n{TRAILER}")
+    finding = only(check_diff(repo, f"{sha}~1", sha))
+    assert (finding.author, finding.severity) == ("ai", Severity.BLOCK)
+
+
+def test_head_cannot_list_its_own_author(repo):
+    write(repo, "assertwatch.toml", "")
+    base = commit_as(repo, HUMAN)
+    write(repo, "assertwatch.toml", '[routing]\nhuman_authors = ["someone@example.com"]\n')
+    write(repo, "tests/test_cart.py", WEAKENED)
+    sha = commit_as(repo, ("Someone", "someone@example.com"))
+    (finding,) = [f for f in check_diff(repo, base, sha).findings if f.rule == "AW004"]
+    assert (finding.author, finding.severity) == ("unknown", Severity.BLOCK)
 
 
 @pytest.mark.parametrize(
@@ -145,9 +220,9 @@ def test_attribution_is_per_file(repo):
 
 
 def test_routing_comes_from_the_base_config(repo):
-    write(repo, "assertwatch.toml", '[routing]\nhuman = "block"\n')
+    write(repo, "assertwatch.toml", LISTED + 'human = "block"\n')
     base = commit_as(repo, HUMAN)
-    write(repo, "assertwatch.toml", '[routing]\nhuman = "warn"\n')
+    write(repo, "assertwatch.toml", LISTED + 'human = "warn"\n')
     write(repo, "tests/test_cart.py", WEAKENED)
     sha = commit_as(repo, HUMAN)
     (finding,) = [f for f in check_diff(repo, base, sha).findings if f.rule == "AW004"]
@@ -414,17 +489,39 @@ def test_paths_by_commit_parses_odd_names():
 
 def test_attributor_classes():
     ai = Commit("a" * 40, "Bot <b@x>", frozenset({"t.py"}), "Co-Authored-By: Claude")
-    human = Commit("b" * 40, "Dev <d@x>", frozenset({"t.py", "u.py"}))
+    human = Commit("b" * 40, "Dev <d@x>", frozenset({"t.py", "u.py"}), listed=True)
+    unlisted = Commit("c" * 40, "Someone <s@x>", frozenset({"t.py", "u.py"}))
     who = Attributor([ai, human])
     assert who.of("t.py").author == "mixed"
     assert who.of("u.py").author == "human"
     assert who.of("v.py").author == "unknown"
     assert who.of("v.py").source == "no commit in the range changed it"
-    assert Attributor([human, human]).of("u.py").source.endswith("and 1 more, no AI signal")
+    two = Attributor([human, human]).of("u.py").source
+    assert two.endswith("and 1 more, no AI signal, author in human_authors")
     assert Attributor([ai], frozenset({"t.py"})).of("t.py").author == "ai"
     assert Attributor([human], frozenset({"t.py"})).of("t.py").author == "unknown"
     assert Attributor([human], hook=True).of("u.py").author == "unknown"
     assert Attributor([human], session="c" * 40).of("u.py").author == "ai"
+    assert Attributor([unlisted]).of("u.py").author == "unknown"
+    assert Attributor([human, unlisted]).of("u.py").author == "unknown"
+    assert Attributor([ai, unlisted]).of("t.py").author == "mixed"
+    in_hook = Attributor([unlisted], hook=True).of("u.py")
+    assert (in_hook.author, in_hook.source.endswith("made in an agent's workspace")) == (
+        "unknown",
+        True,
+    )
+
+
+def test_routing_config_reads_human_authors():
+    config = parse_config('[routing]\nhuman_authors = [" Dev@Example.com ", "*@corp.example"]\n')
+    assert config.human_authors == ("dev@example.com", "*@corp.example")
+    assert config.routing == DEFAULT_ROUTING and not config.errors
+    for bad in ('"dev@example.com"', "[1]", '[""]'):
+        config = parse_config(f"[routing]\nhuman_authors = {bad}\n")
+        assert config.human_authors == ()
+        assert config.errors == [
+            "assertwatch.toml: [routing] human_authors must be a list of emails; ignoring it"
+        ]
 
 
 def test_text_report_shows_author_and_routing(repo):

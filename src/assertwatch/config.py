@@ -12,6 +12,7 @@ change can't relax the rules it is checked against. With no config file, the def
     reason = "legacy suite is being retired"
     [routing]               # what a blocking finding becomes, by who made the change
     human = "warn"          # default; ai, mixed and unknown default to "block"
+    human_authors = ["dev@example.com", "*@example.org"]  # who counts as human (emails)
     ai_patterns = ["my-agent@example[.]com"]  # extra regexes marking a commit as AI-made
 """
 
@@ -52,6 +53,8 @@ class Config:
     # author class -> "block" (keep the rule's severity) or "warn" (a block becomes a warning)
     routing: dict[str, str] = field(default_factory=lambda: dict(DEFAULT_ROUTING))
     ai_patterns: tuple[str, ...] = ()  # regexes added to attribution's defaults
+    # author emails (globs, any case) whose commits without an AI signal are "human"
+    human_authors: tuple[str, ...] = ()
     errors: list[str] = field(default_factory=list)
 
 
@@ -114,7 +117,7 @@ def _routing(data: dict, config: Config) -> None:
         return
     invalid = False
     for key, value in routing.items():
-        if key == "ai_patterns":
+        if key in ("ai_patterns", "human_authors"):
             continue
         if key not in AUTHORS:
             invalid = True
@@ -132,6 +135,13 @@ def _routing(data: dict, config: Config) -> None:
             )
     if invalid:
         config.routing = dict(STRICT_ROUTING)
+    humans = routing.get("human_authors", [])
+    if isinstance(humans, list) and all(isinstance(h, str) and h.strip() for h in humans):
+        config.human_authors = tuple(h.strip().lower() for h in humans)
+    else:  # nobody is listed: no commit is lowered as a human's
+        config.errors.append(
+            f"{CONFIG_PATH}: [routing] human_authors must be a list of emails; ignoring it"
+        )
     patterns = routing.get("ai_patterns", [])
     if not isinstance(patterns, list) or not all(isinstance(p, str) for p in patterns):
         config.errors.append(f"{CONFIG_PATH}: [routing] ai_patterns must be a list of strings")
